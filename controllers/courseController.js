@@ -6,22 +6,35 @@ import Topic from '../models/Topic.js';
 // @access  Public
 export const getCourses = async (req, res) => {
   try {
-    const courses = await Course.find({})
-      .populate('totalTopics')
-      .sort({ order: 1 });
-
-    // Add topic count and calculate progress
-    const coursesWithStats = await Promise.all(
-      courses.map(async (course) => {
-        const topicCount = await Topic.countDocuments({ courseId: course._id });
-        return {
-          ...course.toObject(),
-          totalTopics: topicCount,
+    // Use MongoDB aggregation to get courses with topic counts in ONE query
+    // This fixes the N+1 query problem - previously we ran 1 + N queries
+    const coursesWithStats = await Course.aggregate([
+      // Sort by order first
+      { $sort: { order: 1 } },
+      // Lookup topics and count them
+      {
+        $lookup: {
+          from: 'topics',
+          localField: '_id',
+          foreignField: 'courseId',
+          as: 'topicsList'
+        }
+      },
+      // Add computed fields
+      {
+        $addFields: {
+          totalTopics: { $size: '$topicsList' },
           completedTopics: 0, // Will be updated when user progress is implemented
           progress: 0
-        };
-      })
-    );
+        }
+      },
+      // Remove the full topics array to keep response light
+      {
+        $project: {
+          topicsList: 0
+        }
+      }
+    ]);
 
     res.json(coursesWithStats);
   } catch (error) {
@@ -34,16 +47,36 @@ export const getCourses = async (req, res) => {
 // @access  Public
 export const getCourseById = async (req, res) => {
   try {
-    const course = await Course.findById(req.params.id);
+    const mongoose = await import('mongoose');
+    const courseId = new mongoose.default.Types.ObjectId(req.params.id);
 
-    if (course) {
-      const topicCount = await Topic.countDocuments({ courseId: course._id });
-      res.json({
-        ...course.toObject(),
-        totalTopics: topicCount,
-        completedTopics: 0,
-        progress: 0
-      });
+    // Use aggregation to get course with topic count in single query
+    const result = await Course.aggregate([
+      { $match: { _id: courseId } },
+      {
+        $lookup: {
+          from: 'topics',
+          localField: '_id',
+          foreignField: 'courseId',
+          as: 'topicsList'
+        }
+      },
+      {
+        $addFields: {
+          totalTopics: { $size: '$topicsList' },
+          completedTopics: 0,
+          progress: 0
+        }
+      },
+      {
+        $project: {
+          topicsList: 0
+        }
+      }
+    ]);
+
+    if (result.length > 0) {
+      res.json(result[0]);
     } else {
       res.status(404).json({ message: 'Course not found' });
     }
