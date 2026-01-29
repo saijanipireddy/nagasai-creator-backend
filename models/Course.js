@@ -47,6 +47,11 @@ courseSchema.virtual('totalTopics', {
   count: true
 });
 
+// Indexes for faster queries
+courseSchema.index({ order: 1 });
+courseSchema.index({ isPublished: 1 });
+courseSchema.index({ isPublished: 1, order: 1 });
+
 const Course = mongoose.model('Course', courseSchema);
 
 export default Course;

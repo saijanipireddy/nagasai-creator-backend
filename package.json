@@ -9,11 +9,18 @@
     "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["lms", "education", "nodejs", "express", "mongodb"],
+  "keywords": [
+    "lms",
+    "education",
+    "nodejs",
+    "express",
+    "mongodb"
+  ],
   "author": "Naga sai",
   "license": "ISC",
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

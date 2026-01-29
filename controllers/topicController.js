@@ -5,8 +5,70 @@ import Topic from '../models/Topic.js';
 // @access  Public
 export const getTopics = async (req, res) => {
   try {
-    const topics = await Topic.find({}).populate('courseId', 'name').sort({ order: 1 });
-    res.json(topics);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+    const minimal = req.query.minimal === 'true';
+
+    // Use aggregation for efficient join with course names
+    const pipeline = [
+      { $sort: { order: 1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'courses',
+          localField: 'courseId',
+          foreignField: '_id',
+          as: 'course',
+          pipeline: [
+            { $project: { name: 1 } }
+          ]
+        }
+      },
+      {
+        $addFields: {
+          courseId: {
+            $cond: {
+              if: { $gt: [{ $size: '$course' }, 0] },
+              then: {
+                _id: '$courseId',
+                name: { $arrayElemAt: ['$course.name', 0] }
+              },
+              else: '$courseId'
+            }
+          }
+        }
+      },
+      { $project: { course: 0 } }
+    ];
+
+    // If minimal, only project essential fields
+    if (minimal) {
+      pipeline.push({
+        $project: {
+          title: 1,
+          order: 1,
+          isPublished: 1,
+          courseId: 1,
+          videoUrl: 1,
+          pdfUrl: 1
+        }
+      });
+    }
+
+    const topics = await Topic.aggregate(pipeline).allowDiskUse(true);
+    const totalTopics = await Topic.countDocuments();
+
+    res.json({
+      topics,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalTopics / limit),
+        totalTopics,
+        hasMore: skip + topics.length < totalTopics
+      }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -17,7 +79,9 @@ export const getTopics = async (req, res) => {
 // @access  Public
 export const getTopicById = async (req, res) => {
   try {
-    const topic = await Topic.findById(req.params.id).populate('courseId', 'name color');
+    const topic = await Topic.findById(req.params.id)
+      .populate('courseId', 'name color')
+      .lean();
 
     if (topic) {
       res.json(topic);
@@ -36,11 +100,14 @@ export const createTopic = async (req, res) => {
   try {
     const { courseId, title, order, videoUrl, pdfUrl, practice, codingPractice, isPublished } = req.body;
 
-    // Get the next order number if not provided
+    // Get the next order number if not provided using aggregation
     let topicOrder = order;
     if (topicOrder === undefined) {
-      const lastTopic = await Topic.findOne({ courseId }).sort({ order: -1 });
-      topicOrder = lastTopic ? lastTopic.order + 1 : 1;
+      const result = await Topic.aggregate([
+        { $match: { courseId: new (await import('mongoose')).default.Types.ObjectId(courseId) } },
+        { $group: { _id: null, maxOrder: { $max: '$order' } } }
+      ]);
+      topicOrder = result.length > 0 && result[0].maxOrder !== null ? result[0].maxOrder + 1 : 1;
     }
 
     const topic = await Topic.create({
@@ -93,10 +160,9 @@ export const updateTopic = async (req, res) => {
 // @access  Private/Admin
 export const deleteTopic = async (req, res) => {
   try {
-    const topic = await Topic.findById(req.params.id);
+    const result = await Topic.deleteOne({ _id: req.params.id });
 
-    if (topic) {
-      await Topic.deleteOne({ _id: topic._id });
+    if (result.deletedCount > 0) {
       res.json({ message: 'Topic removed' });
     } else {
       res.status(404).json({ message: 'Topic not found' });
@@ -111,13 +177,22 @@ export const deleteTopic = async (req, res) => {
 // @access  Private/Admin
 export const reorderTopics = async (req, res) => {
   try {
-    const { topics } = req.body; // Array of { id, order }
+    const { topics } = req.body;
 
-    const updatePromises = topics.map(({ id, order }) =>
-      Topic.findByIdAndUpdate(id, { order }, { new: true })
-    );
+    if (!topics || !Array.isArray(topics)) {
+      return res.status(400).json({ message: 'Topics array is required' });
+    }
 
-    await Promise.all(updatePromises);
+    // Use bulkWrite for atomic batch update (single DB operation)
+    const bulkOps = topics.map(({ id, order }) => ({
+      updateOne: {
+        filter: { _id: id },
+        update: { $set: { order } }
+      }
+    }));
+
+    await Topic.bulkWrite(bulkOps, { ordered: false });
+
     res.json({ message: 'Topics reordered successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });

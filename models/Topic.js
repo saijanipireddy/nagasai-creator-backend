@@ -93,8 +93,11 @@ const topicSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for faster queries
+// Indexes for faster queries
 topicSchema.index({ courseId: 1, order: 1 });
+topicSchema.index({ courseId: 1 });
+topicSchema.index({ isPublished: 1 });
+topicSchema.index({ courseId: 1, isPublished: 1 });
 
 const Topic = mongoose.model('Topic', topicSchema);
 

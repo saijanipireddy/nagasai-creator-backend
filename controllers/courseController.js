@@ -6,11 +6,17 @@ import Topic from '../models/Topic.js';
 // @access  Public
 export const getCourses = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
     // Use MongoDB aggregation to get courses with topic counts in ONE query
-    // This fixes the N+1 query problem - previously we ran 1 + N queries
     const coursesWithStats = await Course.aggregate([
       // Sort by order first
       { $sort: { order: 1 } },
+      // Pagination
+      { $skip: skip },
+      { $limit: limit },
       // Lookup topics and count them
       {
         $lookup: {
@@ -24,7 +30,7 @@ export const getCourses = async (req, res) => {
       {
         $addFields: {
           totalTopics: { $size: '$topicsList' },
-          completedTopics: 0, // Will be updated when user progress is implemented
+          completedTopics: 0,
           progress: 0
         }
       },
@@ -34,9 +40,20 @@ export const getCourses = async (req, res) => {
           topicsList: 0
         }
       }
-    ]);
+    ]).allowDiskUse(true);
 
-    res.json(coursesWithStats);
+    // Get total count for pagination info
+    const totalCourses = await Course.countDocuments();
+
+    res.json({
+      courses: coursesWithStats,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCourses / limit),
+        totalCourses,
+        hasMore: skip + coursesWithStats.length < totalCourses
+      }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -159,8 +176,34 @@ export const deleteCourse = async (req, res) => {
 // @access  Public
 export const getCourseTopics = async (req, res) => {
   try {
-    const topics = await Topic.find({ courseId: req.params.id }).sort({ order: 1 });
-    res.json(topics);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 100;
+    const skip = (page - 1) * limit;
+    const minimal = req.query.minimal === 'true';
+
+    let query = Topic.find({ courseId: req.params.id })
+      .sort({ order: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // If minimal flag is set, only return essential fields (for list views)
+    if (minimal) {
+      query = query.select('title order isPublished videoUrl pdfUrl');
+    }
+
+    const topics = await query;
+    const totalTopics = await Topic.countDocuments({ courseId: req.params.id });
+
+    res.json({
+      topics,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalTopics / limit),
+        totalTopics,
+        hasMore: skip + topics.length < totalTopics
+      }
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -171,9 +214,12 @@ export const getCourseTopics = async (req, res) => {
 // @access  Private/Admin
 export const getStats = async (req, res) => {
   try {
-    const totalCourses = await Course.countDocuments();
-    const totalTopics = await Topic.countDocuments();
-    const publishedCourses = await Course.countDocuments({ isPublished: true });
+    // Use Promise.all for parallel execution
+    const [totalCourses, totalTopics, publishedCourses] = await Promise.all([
+      Course.countDocuments(),
+      Topic.countDocuments(),
+      Course.countDocuments({ isPublished: true })
+    ]);
 
     res.json({
       totalCourses,
@@ -197,12 +243,15 @@ export const reorderCourses = async (req, res) => {
       return res.status(400).json({ message: 'Courses array is required' });
     }
 
-    // Update each course's order
-    const updatePromises = courses.map((course, index) =>
-      Course.findByIdAndUpdate(course._id, { order: index }, { new: true })
-    );
+    // Use bulkWrite for atomic batch update (single DB operation)
+    const bulkOps = courses.map((course, index) => ({
+      updateOne: {
+        filter: { _id: course._id },
+        update: { $set: { order: index } }
+      }
+    }));
 
-    await Promise.all(updatePromises);
+    await Course.bulkWrite(bulkOps, { ordered: false });
 
     res.json({ message: 'Courses reordered successfully' });
   } catch (error) {
