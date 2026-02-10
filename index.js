@@ -1,22 +1,16 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import morgan from 'morgan';
 import compression from 'compression';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
+import studentAuthRoutes from './routes/studentAuthRoutes.js';
 import courseRoutes from './routes/courseRoutes.js';
 import topicRoutes from './routes/topicRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
-
-/* -------------------- ENV -------------------- */
-dotenv.config();
-
-/* -------------------- DB -------------------- */
-connectDB();
 
 /* -------------------- APP -------------------- */
 const app = express();
@@ -33,7 +27,8 @@ app.use(
 
       if (
         origin.includes('localhost') ||
-        origin.includes('onrender.com')
+        origin.includes('onrender.com') ||
+        origin.includes('vercel.app')
       ) {
         return callback(null, true);
       }
@@ -61,8 +56,10 @@ app.use(compression({
 
 /* -------------------- CACHE HEADERS -------------------- */
 app.use((req, res, next) => {
-  if (req.method === 'GET') {
-    res.set('Cache-Control', 'public, max-age=300');
+  if (req.method === 'GET' && req.path.startsWith('/uploads')) {
+    res.set('Cache-Control', 'public, max-age=86400');
+  } else if (req.method === 'GET') {
+    res.set('Cache-Control', 'no-store');
   }
   next();
 });
@@ -84,18 +81,19 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 /* -------------------- ROUTES -------------------- */
 app.get('/', (req, res) => {
-  res.send('Nagasai Creator Backend is live 🚀');
+  res.send('Nagasai Creator Backend is live');
 });
 
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
     environment: process.env.NODE_ENV,
-    message: 'Naga Sai LMS API running',
+    message: 'Naga Sai LMS API running (Supabase)',
   });
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/student-auth', studentAuthRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/topics', topicRoutes);
 app.use('/api/upload', uploadRoutes);
@@ -119,5 +117,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
 });

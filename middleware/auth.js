@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import Admin from '../models/Admin.js';
+import supabase from '../config/db.js';
 
 export const protect = async (req, res, next) => {
   let token;
@@ -8,7 +8,49 @@ export const protect = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(' ')[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.admin = await Admin.findById(decoded.id).select('-password');
+
+      const { data: admin, error } = await supabase
+        .from('admins')
+        .select('id, name, email')
+        .eq('id', decoded.id)
+        .single();
+
+      if (error || !admin) {
+        return res.status(401).json({ message: 'Not authorized, user not found' });
+      }
+
+      req.admin = admin;
+      next();
+    } catch (error) {
+      console.error(error);
+      res.status(401).json({ message: 'Not authorized, token failed' });
+    }
+  }
+
+  if (!token) {
+    res.status(401).json({ message: 'Not authorized, no token' });
+  }
+};
+
+export const studentProtect = async (req, res, next) => {
+  let token;
+
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      const { data: student, error } = await supabase
+        .from('students')
+        .select('id, name, email')
+        .eq('id', decoded.id)
+        .single();
+
+      if (error || !student) {
+        return res.status(401).json({ message: 'Not authorized, student not found' });
+      }
+
+      req.student = student;
       next();
     } catch (error) {
       console.error(error);

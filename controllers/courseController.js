@@ -1,5 +1,4 @@
-import Course from '../models/Course.js';
-import Topic from '../models/Topic.js';
+import supabase from '../config/db.js';
 
 // @desc    Get all courses
 // @route   GET /api/courses
@@ -8,50 +7,45 @@ export const getCourses = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
-    const skip = (page - 1) * limit;
+    const offset = (page - 1) * limit;
 
-    // Use MongoDB aggregation to get courses with topic counts in ONE query
-    const coursesWithStats = await Course.aggregate([
-      // Sort by order first
-      { $sort: { order: 1 } },
-      // Pagination
-      { $skip: skip },
-      { $limit: limit },
-      // Lookup topics and count them
-      {
-        $lookup: {
-          from: 'topics',
-          localField: '_id',
-          foreignField: 'courseId',
-          as: 'topicsList'
-        }
-      },
-      // Add computed fields
-      {
-        $addFields: {
-          totalTopics: { $size: '$topicsList' },
-          completedTopics: 0,
-          progress: 0
-        }
-      },
-      // Remove the full topics array to keep response light
-      {
-        $project: {
-          topicsList: 0
-        }
-      }
-    ]).allowDiskUse(true);
+    // Get courses with topic counts from view
+    const { data: courses, error } = await supabase
+      .from('courses_with_topic_count')
+      .select('*')
+      .order('sort_order')
+      .range(offset, offset + limit - 1);
 
-    // Get total count for pagination info
-    const totalCourses = await Course.countDocuments();
+    if (error) throw error;
+
+    // Get total count
+    const { count } = await supabase
+      .from('courses')
+      .select('*', { count: 'exact', head: true });
+
+    // Map to match old API format
+    const mapped = courses.map(c => ({
+      _id: c.id,
+      name: c.name,
+      description: c.description,
+      icon: c.icon,
+      color: c.color,
+      order: c.sort_order,
+      isPublished: c.is_published,
+      totalTopics: c.total_topics || 0,
+      completedTopics: 0,
+      progress: 0,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at
+    }));
 
     res.json({
-      courses: coursesWithStats,
+      courses: mapped,
       pagination: {
         currentPage: page,
-        totalPages: Math.ceil(totalCourses / limit),
-        totalCourses,
-        hasMore: skip + coursesWithStats.length < totalCourses
+        totalPages: Math.ceil((count || 0) / limit),
+        totalCourses: count || 0,
+        hasMore: offset + courses.length < (count || 0)
       }
     });
   } catch (error) {
@@ -64,39 +58,36 @@ export const getCourses = async (req, res) => {
 // @access  Public
 export const getCourseById = async (req, res) => {
   try {
-    const mongoose = await import('mongoose');
-    const courseId = new mongoose.default.Types.ObjectId(req.params.id);
+    const { data: course, error } = await supabase
+      .from('courses')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
 
-    // Use aggregation to get course with topic count in single query
-    const result = await Course.aggregate([
-      { $match: { _id: courseId } },
-      {
-        $lookup: {
-          from: 'topics',
-          localField: '_id',
-          foreignField: 'courseId',
-          as: 'topicsList'
-        }
-      },
-      {
-        $addFields: {
-          totalTopics: { $size: '$topicsList' },
-          completedTopics: 0,
-          progress: 0
-        }
-      },
-      {
-        $project: {
-          topicsList: 0
-        }
-      }
-    ]);
-
-    if (result.length > 0) {
-      res.json(result[0]);
-    } else {
-      res.status(404).json({ message: 'Course not found' });
+    if (error || !course) {
+      return res.status(404).json({ message: 'Course not found' });
     }
+
+    // Get topic count
+    const { count } = await supabase
+      .from('topics')
+      .select('*', { count: 'exact', head: true })
+      .eq('course_id', course.id);
+
+    res.json({
+      _id: course.id,
+      name: course.name,
+      description: course.description,
+      icon: course.icon,
+      color: course.color,
+      order: course.sort_order,
+      isPublished: course.is_published,
+      totalTopics: count || 0,
+      completedTopics: 0,
+      progress: 0,
+      createdAt: course.created_at,
+      updatedAt: course.updated_at
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -109,16 +100,32 @@ export const createCourse = async (req, res) => {
   try {
     const { name, description, icon, color, order, isPublished } = req.body;
 
-    const course = await Course.create({
-      name,
-      description,
-      icon,
-      color,
-      order,
-      isPublished
-    });
+    const { data: course, error } = await supabase
+      .from('courses')
+      .insert({
+        name,
+        description: description || '',
+        icon: icon || 'FaBook',
+        color: color || '#e94560',
+        sort_order: order || 0,
+        is_published: isPublished || false
+      })
+      .select()
+      .single();
 
-    res.status(201).json(course);
+    if (error) throw error;
+
+    res.status(201).json({
+      _id: course.id,
+      name: course.name,
+      description: course.description,
+      icon: course.icon,
+      color: course.color,
+      order: course.sort_order,
+      isPublished: course.is_published,
+      createdAt: course.created_at,
+      updatedAt: course.updated_at
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -131,21 +138,38 @@ export const updateCourse = async (req, res) => {
   try {
     const { name, description, icon, color, order, isPublished } = req.body;
 
-    const course = await Course.findById(req.params.id);
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (icon !== undefined) updates.icon = icon;
+    if (color !== undefined) updates.color = color;
+    if (order !== undefined) updates.sort_order = order;
+    if (isPublished !== undefined) updates.is_published = isPublished;
 
-    if (course) {
-      course.name = name || course.name;
-      course.description = description || course.description;
-      course.icon = icon || course.icon;
-      course.color = color || course.color;
-      course.order = order !== undefined ? order : course.order;
-      course.isPublished = isPublished !== undefined ? isPublished : course.isPublished;
+    const { data: course, error } = await supabase
+      .from('courses')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .single();
 
-      const updatedCourse = await course.save();
-      res.json(updatedCourse);
-    } else {
-      res.status(404).json({ message: 'Course not found' });
+    if (error) throw error;
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
     }
+
+    res.json({
+      _id: course.id,
+      name: course.name,
+      description: course.description,
+      icon: course.icon,
+      color: course.color,
+      order: course.sort_order,
+      isPublished: course.is_published,
+      createdAt: course.created_at,
+      updatedAt: course.updated_at
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -156,16 +180,15 @@ export const updateCourse = async (req, res) => {
 // @access  Private/Admin
 export const deleteCourse = async (req, res) => {
   try {
-    const course = await Course.findById(req.params.id);
+    // Topics are cascade deleted via FK constraint
+    const { error } = await supabase
+      .from('courses')
+      .delete()
+      .eq('id', req.params.id);
 
-    if (course) {
-      // Delete all topics associated with this course
-      await Topic.deleteMany({ courseId: course._id });
-      await Course.deleteOne({ _id: course._id });
-      res.json({ message: 'Course and its topics removed' });
-    } else {
-      res.status(404).json({ message: 'Course not found' });
-    }
+    if (error) throw error;
+
+    res.json({ message: 'Course and its topics removed' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -178,30 +201,84 @@ export const getCourseTopics = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 100;
-    const skip = (page - 1) * limit;
-    const minimal = req.query.minimal === 'true';
+    const offset = (page - 1) * limit;
 
-    let query = Topic.find({ courseId: req.params.id })
-      .sort({ order: 1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    const { data: topics, error } = await supabase
+      .from('topics')
+      .select('*')
+      .eq('course_id', req.params.id)
+      .order('sort_order')
+      .range(offset, offset + limit - 1);
 
-    // If minimal flag is set, only return essential fields (for list views)
-    if (minimal) {
-      query = query.select('title order isPublished videoUrl pdfUrl');
+    if (error) throw error;
+
+    // Get practice questions and coding practices for these topics
+    const topicIds = topics.map(t => t.id);
+
+    let practiceData = [];
+    let codingData = [];
+
+    if (topicIds.length > 0) {
+      const [pRes, cRes] = await Promise.all([
+        supabase.from('practice_questions').select('*').in('topic_id', topicIds).order('sort_order'),
+        supabase.from('coding_practices').select('*').in('topic_id', topicIds)
+      ]);
+      practiceData = pRes.data || [];
+      codingData = cRes.data || [];
     }
 
-    const topics = await query;
-    const totalTopics = await Topic.countDocuments({ courseId: req.params.id });
+    // Group by topic
+    const practiceByTopic = {};
+    practiceData.forEach(pq => {
+      if (!practiceByTopic[pq.topic_id]) practiceByTopic[pq.topic_id] = [];
+      practiceByTopic[pq.topic_id].push({
+        question: pq.question,
+        options: pq.options,
+        answer: pq.answer
+      });
+    });
+
+    const codingByTopic = {};
+    codingData.forEach(cp => {
+      codingByTopic[cp.topic_id] = {
+        language: cp.language,
+        title: cp.title,
+        description: cp.description,
+        referenceImage: cp.reference_image,
+        imageLinks: cp.image_links,
+        starterCode: cp.starter_code,
+        expectedOutput: cp.expected_output,
+        hints: cp.hints
+      };
+    });
+
+    // Map to old format
+    const mapped = topics.map(t => ({
+      _id: t.id,
+      courseId: t.course_id,
+      title: t.title,
+      order: t.sort_order,
+      videoUrl: t.video_url,
+      pdfUrl: t.pdf_url,
+      isPublished: t.is_published,
+      practice: practiceByTopic[t.id] || [],
+      codingPractice: codingByTopic[t.id] || { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [] },
+      createdAt: t.created_at,
+      updatedAt: t.updated_at
+    }));
+
+    const { count } = await supabase
+      .from('topics')
+      .select('*', { count: 'exact', head: true })
+      .eq('course_id', req.params.id);
 
     res.json({
-      topics,
+      topics: mapped,
       pagination: {
         currentPage: page,
-        totalPages: Math.ceil(totalTopics / limit),
-        totalTopics,
-        hasMore: skip + topics.length < totalTopics
+        totalPages: Math.ceil((count || 0) / limit),
+        totalTopics: count || 0,
+        hasMore: offset + topics.length < (count || 0)
       }
     });
   } catch (error) {
@@ -210,16 +287,19 @@ export const getCourseTopics = async (req, res) => {
 };
 
 // @desc    Get dashboard stats
-// @route   GET /api/stats
+// @route   GET /api/courses/stats
 // @access  Private/Admin
 export const getStats = async (req, res) => {
   try {
-    // Use Promise.all for parallel execution
-    const [totalCourses, totalTopics, publishedCourses] = await Promise.all([
-      Course.countDocuments(),
-      Topic.countDocuments(),
-      Course.countDocuments({ isPublished: true })
+    const [coursesRes, topicsRes, publishedRes] = await Promise.all([
+      supabase.from('courses').select('*', { count: 'exact', head: true }),
+      supabase.from('topics').select('*', { count: 'exact', head: true }),
+      supabase.from('courses').select('*', { count: 'exact', head: true }).eq('is_published', true)
     ]);
+
+    const totalCourses = coursesRes.count || 0;
+    const totalTopics = topicsRes.count || 0;
+    const publishedCourses = publishedRes.count || 0;
 
     res.json({
       totalCourses,
@@ -243,15 +323,13 @@ export const reorderCourses = async (req, res) => {
       return res.status(400).json({ message: 'Courses array is required' });
     }
 
-    // Use bulkWrite for atomic batch update (single DB operation)
-    const bulkOps = courses.map((course, index) => ({
-      updateOne: {
-        filter: { _id: course._id },
-        update: { $set: { order: index } }
-      }
-    }));
-
-    await Course.bulkWrite(bulkOps, { ordered: false });
+    for (let i = 0; i < courses.length; i++) {
+      const courseId = courses[i]._id || courses[i].id;
+      await supabase
+        .from('courses')
+        .update({ sort_order: i })
+        .eq('id', courseId);
+    }
 
     res.json({ message: 'Courses reordered successfully' });
   } catch (error) {
