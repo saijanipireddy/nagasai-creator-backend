@@ -11,6 +11,7 @@ import studentAuthRoutes from './routes/studentAuthRoutes.js';
 import courseRoutes from './routes/courseRoutes.js';
 import topicRoutes from './routes/topicRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
+import scoreRoutes from './routes/scoreRoutes.js';
 
 /* -------------------- APP -------------------- */
 const app = express();
@@ -97,6 +98,7 @@ app.use('/api/student-auth', studentAuthRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/topics', topicRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/scores', scoreRoutes);
 
 /* -------------------- 404 -------------------- */
 app.use((req, res) => {

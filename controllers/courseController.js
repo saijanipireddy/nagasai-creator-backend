@@ -248,7 +248,9 @@ export const getCourseTopics = async (req, res) => {
         imageLinks: cp.image_links,
         starterCode: cp.starter_code,
         expectedOutput: cp.expected_output,
-        hints: cp.hints
+        hints: cp.hints,
+        testScript: cp.test_script || '',
+        testCases: cp.test_cases || [],
       };
     });
 
@@ -262,7 +264,7 @@ export const getCourseTopics = async (req, res) => {
       pdfUrl: t.pdf_url,
       isPublished: t.is_published,
       practice: practiceByTopic[t.id] || [],
-      codingPractice: codingByTopic[t.id] || { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [] },
+      codingPractice: codingByTopic[t.id] || { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [], testScript: '', testCases: [] },
       createdAt: t.created_at,
       updatedAt: t.updated_at
     }));

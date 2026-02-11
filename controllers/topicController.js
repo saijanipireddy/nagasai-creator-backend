@@ -1,6 +1,9 @@
 import supabase from '../config/db.js';
 
-// Helper: map topic from Supabase to old API format
+// Default empty coding practice object
+const emptyCodingPractice = { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [], testScript: '', testCases: [] };
+
+// Helper: map topic from Supabase to API format
 const mapTopic = (t, practice = [], codingPractice = null) => ({
   _id: t.id,
   courseId: t.course_id,
@@ -10,7 +13,7 @@ const mapTopic = (t, practice = [], codingPractice = null) => ({
   pdfUrl: t.pdf_url,
   isPublished: t.is_published,
   practice,
-  codingPractice: codingPractice || { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [] },
+  codingPractice: codingPractice || emptyCodingPractice,
   createdAt: t.created_at,
   updatedAt: t.updated_at
 });
@@ -88,7 +91,9 @@ export const getTopicById = async (req, res) => {
       imageLinks: cp.image_links,
       starterCode: cp.starter_code,
       expectedOutput: cp.expected_output,
-      hints: cp.hints
+      hints: cp.hints,
+      testScript: cp.test_script || '',
+      testCases: cp.test_cases || [],
     } : null;
 
     res.json(mapTopic(topic, practice, codingPractice));
@@ -155,7 +160,9 @@ export const createTopic = async (req, res) => {
         image_links: codingPractice.imageLinks || [],
         starter_code: codingPractice.starterCode || '',
         expected_output: codingPractice.expectedOutput || '',
-        hints: codingPractice.hints || []
+        hints: codingPractice.hints || [],
+        test_script: codingPractice.testScript || '',
+        test_cases: codingPractice.testCases || [],
       });
     }
 
@@ -220,7 +227,9 @@ export const updateTopic = async (req, res) => {
           image_links: codingPractice.imageLinks || [],
           starter_code: codingPractice.starterCode || '',
           expected_output: codingPractice.expectedOutput || '',
-          hints: codingPractice.hints || []
+          hints: codingPractice.hints || [],
+          test_script: codingPractice.testScript || '',
+          test_cases: codingPractice.testCases || [],
         });
       }
     }
