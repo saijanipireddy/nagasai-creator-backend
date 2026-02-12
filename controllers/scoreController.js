@@ -133,6 +133,43 @@ const executePiston = async (sourceCode, language, stdin = '') => {
   }
 };
 
+// @desc    Get student's existing coding submission for a topic
+// @route   GET /api/scores/coding-submission/:topicId
+// @access  Private/Student
+export const getCodingSubmission = async (req, res) => {
+  try {
+    const { topicId } = req.params;
+    const studentId = req.student.id;
+
+    const { data, error } = await supabase
+      .from('coding_submissions')
+      .select('*')
+      .eq('student_id', studentId)
+      .eq('topic_id', topicId)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) {
+      return res.json({ submission: null });
+    }
+
+    res.json({
+      submission: {
+        id: data.id,
+        topicId: data.topic_id,
+        passed: data.passed,
+        code: data.code,
+        output: data.output,
+        language: data.language,
+        updatedAt: data.updated_at,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // @desc    Submit coding challenge (server-side validated)
 // @route   POST /api/scores/coding-submit
 // @access  Private/Student
@@ -163,16 +200,24 @@ export const submitCodingChallenge = async (req, res) => {
     const results = [];
 
     if (isWeb) {
-      // Web challenges: frontend ran the testScript in iframe and sent testResults
-      // testResults is an array of strings like ['PASS', 'PASS', 'FAIL: ...']
-      if (!testResults || !Array.isArray(testResults)) {
-        return res.status(400).json({ message: 'testResults array is required for web challenges' });
+      if (cp.test_script && cp.test_script.trim() && testResults && Array.isArray(testResults) && testResults.length > 0) {
+        // Has test script and test results from iframe
+        const totalTests = testResults.length;
+        const passedTests = testResults.filter(r => r === 'PASS').length;
+        passed = totalTests > 0 && passedTests === totalTests;
+        actualOutput = testResults.join('\n');
+        results.push({ total: totalTests, passed: passedTests });
+      } else if (cp.test_script && cp.test_script.trim()) {
+        // Has test script but no results received
+        passed = false;
+        actualOutput = 'Test results not received';
+        results.push({ total: 1, passed: 0 });
+      } else {
+        // No test script - accept as completed (visual practice)
+        passed = true;
+        actualOutput = 'Completed';
+        results.push({ total: 0, passed: 0, visual: true });
       }
-      const totalTests = testResults.length;
-      const passedTests = testResults.filter(r => r === 'PASS').length;
-      passed = totalTests > 0 && passedTests === totalTests;
-      actualOutput = testResults.join('\n');
-      results.push({ total: totalTests, passed: passedTests });
     } else {
       // Non-web: server executes code and compares output
       const testCases = cp.test_cases || [];
@@ -230,6 +275,169 @@ export const submitCodingChallenge = async (req, res) => {
       passed: data.passed,
       language: data.language,
       results,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Submit a practice attempt with full answers
+// @route   POST /api/scores/practice-attempt
+// @access  Private/Student
+export const submitPracticeAttempt = async (req, res) => {
+  try {
+    const { topicId, answers, timeTakenSeconds } = req.body;
+    const studentId = req.student.id;
+
+    if (!topicId || !answers || !Array.isArray(answers)) {
+      return res.status(400).json({ message: 'topicId and answers array are required' });
+    }
+
+    // Calculate score from answers
+    // answers format: [{ questionIndex, selectedOption, correctOption, question, options }]
+    const total = answers.length;
+    const correctCount = answers.filter(a => a.selectedOption === a.correctOption).length;
+    const percentage = Math.round((correctCount / total) * 100 * 100) / 100;
+    const passed = percentage >= 80;
+
+    // Get next attempt number
+    const { data: lastAttempt, error: lastErr } = await supabase
+      .from('practice_attempts')
+      .select('attempt_number')
+      .eq('student_id', studentId)
+      .eq('topic_id', topicId)
+      .order('attempt_number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (lastErr) throw lastErr;
+
+    const attemptNumber = (lastAttempt?.attempt_number || 0) + 1;
+
+    // Insert attempt
+    const { data, error } = await supabase
+      .from('practice_attempts')
+      .insert({
+        student_id: studentId,
+        topic_id: topicId,
+        attempt_number: attemptNumber,
+        score: correctCount,
+        total,
+        percentage,
+        passed,
+        time_taken_seconds: timeTakenSeconds || 0,
+        answers,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Update practice_scores with best score (for leaderboard)
+    const { data: currentBest } = await supabase
+      .from('practice_scores')
+      .select('percentage')
+      .eq('student_id', studentId)
+      .eq('topic_id', topicId)
+      .maybeSingle();
+
+    if (!currentBest || percentage > parseFloat(currentBest.percentage)) {
+      await supabase
+        .from('practice_scores')
+        .upsert(
+          {
+            student_id: studentId,
+            topic_id: topicId,
+            score: correctCount,
+            total,
+            percentage,
+          },
+          { onConflict: 'student_id,topic_id' }
+        );
+    }
+
+    res.json({
+      id: data.id,
+      attemptNumber: data.attempt_number,
+      score: data.score,
+      total: data.total,
+      percentage: parseFloat(data.percentage),
+      passed: data.passed,
+      timeTakenSeconds: data.time_taken_seconds,
+      createdAt: data.created_at,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get all practice attempts for a topic (without answers, for dashboard)
+// @route   GET /api/scores/practice-attempts/:topicId
+// @access  Private/Student
+export const getPracticeAttempts = async (req, res) => {
+  try {
+    const { topicId } = req.params;
+    const studentId = req.student.id;
+
+    const { data, error } = await supabase
+      .from('practice_attempts')
+      .select('id, attempt_number, score, total, percentage, passed, time_taken_seconds, created_at')
+      .eq('student_id', studentId)
+      .eq('topic_id', topicId)
+      .order('attempt_number', { ascending: false });
+
+    if (error) throw error;
+
+    const attempts = (data || []).map(a => ({
+      id: a.id,
+      attemptNumber: a.attempt_number,
+      score: a.score,
+      total: a.total,
+      percentage: parseFloat(a.percentage),
+      passed: a.passed,
+      timeTakenSeconds: a.time_taken_seconds,
+      createdAt: a.created_at,
+    }));
+
+    // Get best score
+    const best = attempts.reduce((max, a) => a.percentage > max ? a.percentage : max, 0);
+
+    res.json({ attempts, bestPercentage: best });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get single practice attempt detail with answers (for review)
+// @route   GET /api/scores/practice-attempt/:attemptId
+// @access  Private/Student
+export const getPracticeAttemptDetail = async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    const studentId = req.student.id;
+
+    const { data, error } = await supabase
+      .from('practice_attempts')
+      .select('*')
+      .eq('id', attemptId)
+      .eq('student_id', studentId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) {
+      return res.status(404).json({ message: 'Attempt not found' });
+    }
+
+    res.json({
+      id: data.id,
+      attemptNumber: data.attempt_number,
+      score: data.score,
+      total: data.total,
+      percentage: parseFloat(data.percentage),
+      passed: data.passed,
+      timeTakenSeconds: data.time_taken_seconds,
+      answers: data.answers,
+      createdAt: data.created_at,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
