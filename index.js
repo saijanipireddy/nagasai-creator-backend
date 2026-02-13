@@ -77,7 +77,7 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
-/* -------------------- STATIC FILES -------------------- */
+/* -------------------- STATIC FILES (backward compat for old local uploads) -------------------- */
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 /* -------------------- ROUTES -------------------- */
