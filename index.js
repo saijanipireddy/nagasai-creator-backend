@@ -3,8 +3,6 @@ import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import compression from 'compression';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/authRoutes.js';
 import studentAuthRoutes from './routes/studentAuthRoutes.js';
@@ -15,10 +13,6 @@ import scoreRoutes from './routes/scoreRoutes.js';
 
 /* -------------------- APP -------------------- */
 const app = express();
-
-/* -------------------- __dirname -------------------- */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 /* -------------------- MIDDLEWARE -------------------- */
 app.use(
@@ -57,9 +51,7 @@ app.use(compression({
 
 /* -------------------- CACHE HEADERS -------------------- */
 app.use((req, res, next) => {
-  if (req.method === 'GET' && req.path.startsWith('/uploads')) {
-    res.set('Cache-Control', 'public, max-age=86400');
-  } else if (req.method === 'GET') {
+  if (req.method === 'GET') {
     res.set('Cache-Control', 'no-store');
   }
   next();
@@ -76,9 +68,6 @@ app.use((req, res, next) => {
 if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
-
-/* -------------------- STATIC FILES (backward compat for old local uploads) -------------------- */
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 /* -------------------- ROUTES -------------------- */
 app.get('/', (req, res) => {

@@ -288,6 +288,72 @@ export const getCourseTopics = async (req, res) => {
   }
 };
 
+// @desc    Get course topics summary (lightweight — sidebar only)
+// @route   GET /api/courses/:id/topics-summary
+// @access  Public
+export const getCourseTopicsSummary = async (req, res) => {
+  try {
+    const { data: topics, error } = await supabase
+      .from('topics')
+      .select('id, title, sort_order, video_url, pdf_url, is_published')
+      .eq('course_id', req.params.id)
+      .order('sort_order');
+
+    if (error) throw error;
+
+    const topicIds = topics.map(t => t.id);
+
+    let practiceCountMap = {};
+    let codingTitleMap = {};
+
+    if (topicIds.length > 0) {
+      // Get practice question counts per topic
+      const { data: practiceCounts, error: pcErr } = await supabase
+        .rpc('count_practice_by_topic', { topic_ids: topicIds })
+        .select('*');
+
+      // Fallback: if RPC doesn't exist, do a lightweight count
+      if (pcErr) {
+        const { data: pqData } = await supabase
+          .from('practice_questions')
+          .select('topic_id')
+          .in('topic_id', topicIds);
+        (pqData || []).forEach(pq => {
+          practiceCountMap[pq.topic_id] = (practiceCountMap[pq.topic_id] || 0) + 1;
+        });
+      } else {
+        (practiceCounts || []).forEach(row => {
+          practiceCountMap[row.topic_id] = row.count;
+        });
+      }
+
+      // Get coding practice titles per topic
+      const { data: codingData } = await supabase
+        .from('coding_practices')
+        .select('topic_id, title')
+        .in('topic_id', topicIds);
+      (codingData || []).forEach(cp => {
+        codingTitleMap[cp.topic_id] = cp.title;
+      });
+    }
+
+    const mapped = topics.map(t => ({
+      _id: t.id,
+      title: t.title,
+      order: t.sort_order,
+      videoUrl: t.video_url,
+      pdfUrl: t.pdf_url,
+      isPublished: t.is_published,
+      practiceCount: practiceCountMap[t.id] || 0,
+      codingPracticeTitle: codingTitleMap[t.id] || '',
+    }));
+
+    res.json({ topics: mapped });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // @desc    Get dashboard stats
 // @route   GET /api/courses/stats
 // @access  Private/Admin

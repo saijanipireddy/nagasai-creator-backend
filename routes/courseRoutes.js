@@ -6,6 +6,7 @@ import {
   updateCourse,
   deleteCourse,
   getCourseTopics,
+  getCourseTopicsSummary,
   getStats,
   reorderCourses
 } from '../controllers/courseController.js';
@@ -16,6 +17,7 @@ router.get('/', getCourses);
 router.get('/stats', getStats);
 router.put('/reorder', reorderCourses);
 router.get('/:id', getCourseById);
+router.get('/:id/topics-summary', getCourseTopicsSummary);
 router.get('/:id/topics', getCourseTopics);
 router.post('/', createCourse);
 router.put('/:id', updateCourse);

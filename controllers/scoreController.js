@@ -629,16 +629,26 @@ export const getLeaderboard = async (req, res) => {
     const currentUserEntry = leaderboard.find((e) => e.isCurrentUser);
     let myRank = currentUserEntry ? currentUserEntry.rank : null;
 
-    // If student not in top 50, get their rank
+    // If student not in top 50, calculate rank efficiently using count
     if (!myRank) {
-      const { data: allScorers, error: allErr } = await supabase
+      // Step 1: Get this student's total points (1 row)
+      const { data: myEntry, error: myErr } = await supabase
         .from('leaderboard')
-        .select('student_id')
-        .order('total_points', { ascending: false });
+        .select('total_points')
+        .eq('student_id', studentId)
+        .maybeSingle();
 
-      if (!allErr && allScorers) {
-        const idx = allScorers.findIndex((r) => r.student_id === studentId);
-        if (idx !== -1) myRank = idx + 1;
+      if (!myErr && myEntry) {
+        // Step 2: Count students with more points (1 integer)
+        const { count, error: countErr } = await supabase
+          .from('leaderboard')
+          .select('*', { count: 'exact', head: true })
+          .gt('total_points', myEntry.total_points);
+
+        if (!countErr) {
+          // Rank = count of students above + 1
+          myRank = (count || 0) + 1;
+        }
       }
     }
 
