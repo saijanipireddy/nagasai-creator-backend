@@ -1,4 +1,5 @@
 import express from 'express';
+import { protect } from '../middleware/auth.js';
 import {
   getTopics,
   getTopicById,
@@ -12,9 +13,9 @@ const router = express.Router();
 
 router.get('/', getTopics);
 router.get('/:id', getTopicById);
-router.post('/', createTopic);
-router.put('/reorder', reorderTopics);
-router.put('/:id', updateTopic);
-router.delete('/:id', deleteTopic);
+router.post('/', protect, createTopic);
+router.put('/reorder', protect, reorderTopics);
+router.put('/:id', protect, updateTopic);
+router.delete('/:id', protect, deleteTopic);
 
 export default router;

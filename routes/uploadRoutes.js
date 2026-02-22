@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import supabase from '../config/db.js';
+import { protect } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -34,16 +35,17 @@ const ensureBucket = async () => {
       fileSizeLimit: 10 * 1024 * 1024,
       allowedMimeTypes: ['application/pdf', 'image/jpeg', 'image/png', 'image/gif']
     });
-    if (error) console.error('Failed to create bucket:', error.message);
-    else console.log('Created Supabase Storage bucket: uploads');
+    if (error && process.env.NODE_ENV !== 'production') {
+      console.error('Failed to create bucket:', error.message);
+    }
   }
 };
 ensureBucket();
 
 // @desc    Upload file to Supabase Storage
 // @route   POST /api/upload
-// @access  Public
-router.post('/', upload.single('file'), async (req, res) => {
+// @access  Private (Admin)
+router.post('/', protect, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
@@ -61,7 +63,6 @@ router.post('/', upload.single('file'), async (req, res) => {
       });
 
     if (error) {
-      console.error('Supabase upload error:', error);
       return res.status(500).json({ message: 'Failed to upload file to cloud storage' });
     }
 
@@ -76,7 +77,6 @@ router.post('/', upload.single('file'), async (req, res) => {
       path: urlData.publicUrl
     });
   } catch (error) {
-    console.error('Upload error:', error);
     res.status(500).json({ message: error.message });
   }
 });

@@ -1,5 +1,26 @@
 import supabase from '../config/db.js';
 
+/* ---------- Lightweight in-memory cache ---------- */
+const cache = new Map();
+const CACHE_TTL = 30_000; // 30 seconds
+
+function getCached(key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) { cache.delete(key); return null; }
+  return entry.data;
+}
+
+function setCache(key, data) {
+  cache.set(key, { data, ts: Date.now() });
+}
+
+function invalidateCourseCache() {
+  for (const key of cache.keys()) {
+    if (key.startsWith('courses')) cache.delete(key);
+  }
+}
+
 // @desc    Get all courses
 // @route   GET /api/courses
 // @access  Public
@@ -9,19 +30,26 @@ export const getCourses = async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
 
-    // Get courses with topic counts from view
-    const { data: courses, error } = await supabase
-      .from('courses_with_topic_count')
-      .select('*')
-      .order('sort_order')
-      .range(offset, offset + limit - 1);
+    const cacheKey = `courses:${page}:${limit}`;
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
 
+    // Get courses with topic counts from view
+    const [coursesRes, countRes] = await Promise.all([
+      supabase
+        .from('courses_with_topic_count')
+        .select('*')
+        .order('sort_order')
+        .range(offset, offset + limit - 1),
+      supabase
+        .from('courses')
+        .select('*', { count: 'exact', head: true })
+    ]);
+
+    const { data: courses, error } = coursesRes;
     if (error) throw error;
 
-    // Get total count
-    const { count } = await supabase
-      .from('courses')
-      .select('*', { count: 'exact', head: true });
+    const { count } = countRes;
 
     // Map to match old API format
     const mapped = courses.map(c => ({
@@ -39,7 +67,7 @@ export const getCourses = async (req, res) => {
       updatedAt: c.updated_at
     }));
 
-    res.json({
+    const response = {
       courses: mapped,
       pagination: {
         currentPage: page,
@@ -47,7 +75,10 @@ export const getCourses = async (req, res) => {
         totalCourses: count || 0,
         hasMore: offset + courses.length < (count || 0)
       }
-    });
+    };
+
+    setCache(cacheKey, response);
+    res.json(response);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -115,6 +146,7 @@ export const createCourse = async (req, res) => {
 
     if (error) throw error;
 
+    invalidateCourseCache();
     res.status(201).json({
       _id: course.id,
       name: course.name,
@@ -159,6 +191,7 @@ export const updateCourse = async (req, res) => {
       return res.status(404).json({ message: 'Course not found' });
     }
 
+    invalidateCourseCache();
     res.json({
       _id: course.id,
       name: course.name,
@@ -188,6 +221,7 @@ export const deleteCourse = async (req, res) => {
 
     if (error) throw error;
 
+    invalidateCourseCache();
     res.json({ message: 'Course and its topics removed' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -293,6 +327,10 @@ export const getCourseTopics = async (req, res) => {
 // @access  Public
 export const getCourseTopicsSummary = async (req, res) => {
   try {
+    const cacheKey = `topics-summary:${req.params.id}`;
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
+
     const { data: topics, error } = await supabase
       .from('topics')
       .select('id, title, sort_order, video_url, pdf_url, is_published')
@@ -348,7 +386,9 @@ export const getCourseTopicsSummary = async (req, res) => {
       codingPracticeTitle: codingTitleMap[t.id] || '',
     }));
 
-    res.json({ topics: mapped });
+    const response = { topics: mapped };
+    setCache(cacheKey, response);
+    res.json(response);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -391,14 +431,17 @@ export const reorderCourses = async (req, res) => {
       return res.status(400).json({ message: 'Courses array is required' });
     }
 
-    for (let i = 0; i < courses.length; i++) {
-      const courseId = courses[i]._id || courses[i].id;
-      await supabase
+    // Batch all updates in parallel instead of sequential N+1
+    const updates = courses.map((course, i) => {
+      const courseId = course._id || course.id;
+      return supabase
         .from('courses')
         .update({ sort_order: i })
         .eq('id', courseId);
-    }
+    });
+    await Promise.all(updates);
 
+    invalidateCourseCache();
     res.json({ message: 'Courses reordered successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });

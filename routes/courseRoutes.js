@@ -1,4 +1,5 @@
 import express from 'express';
+import { protect } from '../middleware/auth.js';
 import {
   getCourses,
   getCourseById,
@@ -14,13 +15,13 @@ import {
 const router = express.Router();
 
 router.get('/', getCourses);
-router.get('/stats', getStats);
-router.put('/reorder', reorderCourses);
+router.get('/stats', protect, getStats);
+router.put('/reorder', protect, reorderCourses);
 router.get('/:id', getCourseById);
 router.get('/:id/topics-summary', getCourseTopicsSummary);
 router.get('/:id/topics', getCourseTopics);
-router.post('/', createCourse);
-router.put('/:id', updateCourse);
-router.delete('/:id', deleteCourse);
+router.post('/', protect, createCourse);
+router.put('/:id', protect, updateCourse);
+router.delete('/:id', protect, deleteCourse);
 
 export default router;

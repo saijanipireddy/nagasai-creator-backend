@@ -2,12 +2,26 @@ import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
 import { generateToken } from '../middleware/auth.js';
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // @desc    Register admin
 // @route   POST /api/auth/register
 // @access  Public
 export const registerAdmin = async (req, res) => {
   try {
     const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Please provide name, email, and password' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ message: 'Please provide a valid email address' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
 
     // Check if admin exists
     const { data: existing } = await supabase
@@ -21,8 +35,7 @@ export const registerAdmin = async (req, res) => {
     }
 
     // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(password, 8);
 
     // Create admin
     const { data: admin, error } = await supabase
@@ -54,6 +67,14 @@ export const registerAdmin = async (req, res) => {
 export const loginAdmin = async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Please provide email and password' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ message: 'Please provide a valid email address' });
+    }
 
     const { data: admin, error } = await supabase
       .from('admins')

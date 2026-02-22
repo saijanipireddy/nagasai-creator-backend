@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
 import { generateToken } from '../middleware/auth.js';
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // @desc    Register student
 // @route   POST /api/student-auth/register
 // @access  Public
@@ -11,6 +13,10 @@ export const registerStudent = async (req, res) => {
 
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'Please provide name, email, and password' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ message: 'Please provide a valid email address' });
     }
 
     if (password.length < 6) {
@@ -29,8 +35,7 @@ export const registerStudent = async (req, res) => {
     }
 
     // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(password, 8);
 
     // Create student
     const { data: student, error } = await supabase

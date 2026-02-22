@@ -11,8 +11,12 @@ dns.setDefaultResultOrder('ipv4first');
 
 const migrationsDir = path.join(__dirname, 'supabase', 'migrations');
 
-// Default: Session Pooler connection (IPv4 compatible)
-const DB_URL = process.env.DATABASE_URL || 'postgresql://postgres.bwdapyxuajegvbvyrslw:SaiSahi%40143@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres';
+// Require DATABASE_URL from environment
+const DB_URL = process.env.DATABASE_URL;
+if (!DB_URL) {
+  console.error('ERROR: DATABASE_URL environment variable is required.');
+  process.exit(1);
+}
 
 async function migrate() {
   console.log('Connecting to database...');
