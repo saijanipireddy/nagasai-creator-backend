@@ -1,11 +1,13 @@
 import express from 'express';
 import { registerStudent, loginStudent, getStudentProfile } from '../controllers/studentAuthController.js';
 import { studentProtect } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+import { registerSchema, loginSchema } from '../schemas/auth.js';
 
 const router = express.Router();
 
-router.post('/register', registerStudent);
-router.post('/login', loginStudent);
+router.post('/register', validate(registerSchema), registerStudent);
+router.post('/login', validate(loginSchema), loginStudent);
 router.get('/profile', studentProtect, getStudentProfile);
 
 export default router;

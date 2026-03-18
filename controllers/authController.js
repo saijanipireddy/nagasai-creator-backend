@@ -6,9 +6,15 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // @desc    Register admin
 // @route   POST /api/auth/register
-// @access  Public
+// @access  Protected by registration key
 export const registerAdmin = async (req, res) => {
   try {
+    // Require admin registration key
+    const regKey = req.headers['x-admin-registration-key'];
+    if (!regKey || regKey !== process.env.ADMIN_REGISTRATION_KEY) {
+      return res.status(403).json({ message: 'Forbidden: invalid registration key' });
+    }
+
     const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
@@ -19,8 +25,8 @@ export const registerAdmin = async (req, res) => {
       return res.status(400).json({ message: 'Please provide a valid email address' });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    if (password.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' });
     }
 
     // Check if admin exists
@@ -35,7 +41,7 @@ export const registerAdmin = async (req, res) => {
     }
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(password, 8);
+    const hashedPassword = await bcrypt.hash(password, 12);
 
     // Create admin
     const { data: admin, error } = await supabase
@@ -54,7 +60,7 @@ export const registerAdmin = async (req, res) => {
       _id: admin.id,
       name: admin.name,
       email: admin.email,
-      token: generateToken(admin.id)
+      token: generateToken(admin.id, 'admin')
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -93,7 +99,7 @@ export const loginAdmin = async (req, res) => {
         _id: admin.id,
         name: admin.name,
         email: admin.email,
-        token: generateToken(admin.id)
+        token: generateToken(admin.id, 'admin')
       });
     } else {
       res.status(401).json({ message: 'Invalid email or password' });

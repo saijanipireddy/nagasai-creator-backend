@@ -3,11 +3,13 @@ import cluster from 'node:cluster';
 import os from 'node:os';
 import express from 'express';
 import cors from 'cors';
-import morgan from 'morgan';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import pinoHttp from 'pino-http';
+import { randomUUID } from 'node:crypto';
 
+import logger from './config/logger.js';
 import authRoutes from './routes/authRoutes.js';
 import studentAuthRoutes from './routes/studentAuthRoutes.js';
 import courseRoutes from './routes/courseRoutes.js';
@@ -19,12 +21,12 @@ import scoreRoutes from './routes/scoreRoutes.js';
 const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
 for (const key of required) {
   if (!process.env[key]) {
-    console.error(`FATAL: Missing required env var: ${key}`);
+    logger.fatal(`Missing required env var: ${key}`);
     process.exit(1);
   }
 }
 if (process.env.JWT_SECRET.length < 32) {
-  console.error('FATAL: JWT_SECRET must be at least 32 characters');
+  logger.fatal('JWT_SECRET must be at least 32 characters');
   process.exit(1);
 }
 
@@ -33,12 +35,12 @@ const WORKERS = parseInt(process.env.WEB_CONCURRENCY) || Math.min(os.cpus().leng
 const isProduction = process.env.NODE_ENV === 'production';
 
 if (isProduction && cluster.isPrimary && WORKERS > 1) {
-  console.log(`Primary ${process.pid} forking ${WORKERS} workers`);
+  logger.info(`Primary ${process.pid} forking ${WORKERS} workers`);
   for (let i = 0; i < WORKERS; i++) {
     cluster.fork();
   }
   cluster.on('exit', (worker) => {
-    console.log(`Worker ${worker.process.pid} died, restarting...`);
+    logger.warn(`Worker ${worker.process.pid} died, restarting...`);
     cluster.fork();
   });
 } else {
@@ -48,17 +50,27 @@ if (isProduction && cluster.isPrimary && WORKERS > 1) {
 function startServer() {
   const app = express();
 
-  /* -------------------- MIDDLEWARE -------------------- */
+  /* -------------------- TRUST PROXY -------------------- */
+  app.set('trust proxy', 1);
+
+  /* -------------------- CORS — exact origin allowlist -------------------- */
+  const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   app.use(
     cors({
       origin: (origin, callback) => {
+        // Allow requests with no origin (e.g. server-to-server, curl)
         if (!origin) return callback(null, true);
 
-        if (
-          origin.includes('localhost') ||
-          origin.includes('onrender.com') ||
-          origin.includes('vercel.app')
-        ) {
+        // In dev, allow localhost
+        if (!isProduction && origin.includes('localhost')) {
+          return callback(null, true);
+        }
+
+        if (allowedOrigins.includes(origin)) {
           return callback(null, true);
         }
 
@@ -100,10 +112,14 @@ function startServer() {
     next();
   });
 
-  /* -------------------- LOGGING -------------------- */
-  if (!isProduction) {
-    app.use(morgan('dev'));
-  }
+  /* -------------------- STRUCTURED LOGGING (pino-http) -------------------- */
+  app.use(
+    pinoHttp({
+      logger,
+      genReqId: () => randomUUID(),
+      autoLogging: isProduction,
+    })
+  );
 
   /* -------------------- RATE LIMITING -------------------- */
   const authLimiter = rateLimit({
@@ -116,10 +132,18 @@ function startServer() {
 
   const apiLimiter = rateLimit({
     windowMs: 1 * 60 * 1000,
-    max: 100,
+    max: 200,
     standardHeaders: true,
     legacyHeaders: false,
     message: { message: 'Too many requests, please try again later.' }
+  });
+
+  const codingSubmitLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Too many code submissions, please wait before trying again.' }
   });
 
   /* -------------------- ROUTES -------------------- */
@@ -141,6 +165,9 @@ function startServer() {
   app.use('/api/student-auth/login', authLimiter);
   app.use('/api/student-auth/register', authLimiter);
 
+  // Coding submit rate limit (before general API limiter)
+  app.use('/api/scores/coding-submit', codingSubmitLimiter);
+
   app.use('/api', apiLimiter);
 
   app.use('/api/auth', authRoutes);
@@ -157,13 +184,11 @@ function startServer() {
 
   /* -------------------- ERROR HANDLER -------------------- */
   app.use((err, req, res, next) => {
-    if (!isProduction) {
-      console.error(err.stack);
-    }
+    logger.error({ err, reqId: req.id }, 'Unhandled error');
 
     res.status(500).json({
-      message: err.message || 'Internal Server Error',
-      stack: isProduction ? null : err.stack,
+      message: isProduction ? 'Internal Server Error' : err.message,
+      stack: isProduction ? undefined : err.stack,
     });
   });
 
@@ -171,12 +196,12 @@ function startServer() {
   const PORT = process.env.PORT || 5000;
 
   const server = app.listen(PORT, () => {
-    console.log(`Worker ${process.pid} running on port ${PORT}`);
+    logger.info(`Worker ${process.pid} running on port ${PORT}`);
   });
 
   /* -------------------- GRACEFUL SHUTDOWN -------------------- */
   const shutdown = (signal) => {
-    console.log(`${signal} received by ${process.pid}. Shutting down...`);
+    logger.info(`${signal} received by ${process.pid}. Shutting down...`);
     server.close(() => {
       process.exit(0);
     });

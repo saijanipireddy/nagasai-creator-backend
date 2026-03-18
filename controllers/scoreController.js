@@ -101,12 +101,47 @@ const PISTON_LANGUAGES = {
   swift: { lang: 'swift', version: '5.3.3' },
 };
 
-// Execute code via Piston API
+/* -------------------- CIRCUIT BREAKER FOR PISTON -------------------- */
+const circuitBreaker = {
+  failures: 0,
+  threshold: 5,
+  openUntil: 0,
+  resetTimeout: 60_000,
+
+  isOpen() {
+    if (this.failures >= this.threshold) {
+      if (Date.now() < this.openUntil) return true;
+      // Half-open: allow one attempt
+      this.failures = 0;
+    }
+    return false;
+  },
+
+  recordFailure() {
+    this.failures++;
+    if (this.failures >= this.threshold) {
+      this.openUntil = Date.now() + this.resetTimeout;
+    }
+  },
+
+  recordSuccess() {
+    this.failures = 0;
+  },
+};
+
+// Execute code via Piston API with 15s timeout + circuit breaker
 const executePiston = async (sourceCode, language, stdin = '') => {
   const config = PISTON_LANGUAGES[language];
   if (!config) return { success: false, output: `Unsupported language: ${language}` };
 
+  if (circuitBreaker.isOpen()) {
+    return { success: false, output: 'Code execution service is temporarily unavailable. Please try again in a minute.' };
+  }
+
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
     const response = await fetch('https://emkc.org/api/v2/piston/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -116,10 +151,18 @@ const executePiston = async (sourceCode, language, stdin = '') => {
         files: [{ content: sourceCode }],
         stdin: stdin || '',
       }),
+      signal: controller.signal,
     });
 
-    if (!response.ok) return { success: false, output: 'Execution service unavailable' };
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      circuitBreaker.recordFailure();
+      return { success: false, output: 'Execution service unavailable' };
+    }
+
     const data = await response.json();
+    circuitBreaker.recordSuccess();
 
     if (data.run) {
       const output = data.run.output || data.run.stdout || '';
@@ -129,6 +172,10 @@ const executePiston = async (sourceCode, language, stdin = '') => {
     }
     return { success: false, output: 'No output received' };
   } catch (err) {
+    circuitBreaker.recordFailure();
+    if (err.name === 'AbortError') {
+      return { success: false, output: 'Code execution timed out (15s limit)' };
+    }
     return { success: false, output: `Execution error: ${err.message}` };
   }
 };
@@ -201,11 +248,12 @@ export const submitCodingChallenge = async (req, res) => {
 
     if (isWeb) {
       if (cp.test_script && cp.test_script.trim() && testResults && Array.isArray(testResults) && testResults.length > 0) {
-        // Has test script and test results from iframe
-        const totalTests = testResults.length;
-        const passedTests = testResults.filter(r => r === 'PASS').length;
+        // Cap test count to 50 to prevent abuse
+        const capped = testResults.slice(0, 50);
+        const totalTests = capped.length;
+        const passedTests = capped.filter(r => r === 'PASS').length;
         passed = totalTests > 0 && passedTests === totalTests;
-        actualOutput = testResults.join('\n');
+        actualOutput = `[client-reported] ${capped.join('\n')}`;
         results.push({ total: totalTests, passed: passedTests });
       } else if (cp.test_script && cp.test_script.trim()) {
         // Has test script but no results received
@@ -599,6 +647,10 @@ export const getCompletions = async (req, res) => {
   }
 };
 
+/* -------------------- LEADERBOARD CACHE (60s TTL) -------------------- */
+let leaderboardCache = { data: null, ts: 0 };
+const LEADERBOARD_TTL = 60_000;
+
 // @desc    Get leaderboard (top 50 + current student rank)
 // @route   GET /api/scores/leaderboard
 // @access  Private/Student
@@ -606,16 +658,23 @@ export const getLeaderboard = async (req, res) => {
   try {
     const studentId = req.student.id;
 
-    // Get top 50 from view
-    const { data: topScorers, error } = await supabase
-      .from('leaderboard')
-      .select('*')
-      .order('total_points', { ascending: false })
-      .limit(50);
+    // Serve top-50 from cache if fresh
+    let topScorers;
+    if (leaderboardCache.data && Date.now() - leaderboardCache.ts < LEADERBOARD_TTL) {
+      topScorers = leaderboardCache.data;
+    } else {
+      const { data, error } = await supabase
+        .from('leaderboard')
+        .select('*')
+        .order('total_points', { ascending: false })
+        .limit(50);
 
-    if (error) throw error;
+      if (error) throw error;
+      topScorers = data || [];
+      leaderboardCache = { data: topScorers, ts: Date.now() };
+    }
 
-    const leaderboard = (topScorers || []).map((row, index) => ({
+    const leaderboard = topScorers.map((row, index) => ({
       rank: index + 1,
       studentId: row.student_id,
       studentName: row.student_name,
@@ -625,13 +684,12 @@ export const getLeaderboard = async (req, res) => {
       isCurrentUser: row.student_id === studentId,
     }));
 
-    // Find current student's rank
+    // Find current student's rank (computed fresh each request)
     const currentUserEntry = leaderboard.find((e) => e.isCurrentUser);
     let myRank = currentUserEntry ? currentUserEntry.rank : null;
 
     // If student not in top 50, calculate rank efficiently using count
     if (!myRank) {
-      // Step 1: Get this student's total points (1 row)
       const { data: myEntry, error: myErr } = await supabase
         .from('leaderboard')
         .select('total_points')
@@ -639,14 +697,12 @@ export const getLeaderboard = async (req, res) => {
         .maybeSingle();
 
       if (!myErr && myEntry) {
-        // Step 2: Count students with more points (1 integer)
         const { count, error: countErr } = await supabase
           .from('leaderboard')
           .select('*', { count: 'exact', head: true })
           .gt('total_points', myEntry.total_points);
 
         if (!countErr) {
-          // Rank = count of students above + 1
           myRank = (count || 0) + 1;
         }
       }

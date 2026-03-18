@@ -19,8 +19,8 @@ export const registerStudent = async (req, res) => {
       return res.status(400).json({ message: 'Please provide a valid email address' });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    if (password.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' });
     }
 
     // Check if student exists
@@ -35,7 +35,7 @@ export const registerStudent = async (req, res) => {
     }
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(password, 8);
+    const hashedPassword = await bcrypt.hash(password, 12);
 
     // Create student
     const { data: student, error } = await supabase
@@ -54,7 +54,7 @@ export const registerStudent = async (req, res) => {
       _id: student.id,
       name: student.name,
       email: student.email,
-      token: generateToken(student.id)
+      token: generateToken(student.id, 'student')
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -89,7 +89,7 @@ export const loginStudent = async (req, res) => {
         _id: student.id,
         name: student.name,
         email: student.email,
-        token: generateToken(student.id)
+        token: generateToken(student.id, 'student')
       });
     } else {
       res.status(401).json({ message: 'Invalid email or password' });

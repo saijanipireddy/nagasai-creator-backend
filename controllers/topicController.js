@@ -270,12 +270,14 @@ export const reorderTopics = async (req, res) => {
       return res.status(400).json({ message: 'Topics array is required' });
     }
 
-    for (const { id, order } of topics) {
-      await supabase
-        .from('topics')
-        .update({ sort_order: order })
-        .eq('id', id);
-    }
+    await Promise.all(
+      topics.map(({ id, order }) =>
+        supabase
+          .from('topics')
+          .update({ sort_order: order })
+          .eq('id', id)
+      )
+    );
 
     res.json({ message: 'Topics reordered successfully' });
   } catch (error) {
