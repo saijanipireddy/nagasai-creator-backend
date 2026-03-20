@@ -16,6 +16,7 @@ import courseRoutes from './routes/courseRoutes.js';
 import topicRoutes from './routes/topicRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
 import scoreRoutes from './routes/scoreRoutes.js';
+import jobRoutes from './routes/jobRoutes.js';
 
 /* -------------------- ENV VALIDATION -------------------- */
 const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
@@ -176,6 +177,7 @@ function startServer() {
   app.use('/api/topics', topicRoutes);
   app.use('/api/upload', uploadRoutes);
   app.use('/api/scores', scoreRoutes);
+  app.use('/api/jobs', jobRoutes);
 
   /* -------------------- 404 -------------------- */
   app.use((req, res) => {

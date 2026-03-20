@@ -142,7 +142,7 @@ const executePiston = async (sourceCode, language, stdin = '') => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
 
-    const response = await fetch('https://emkc.org/api/v2/piston/execute', {
+    const response = await fetch(process.env.PISTON_API_URL || 'https://emkc.org/api/v2/piston/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
