@@ -648,6 +648,259 @@ export const getCompletions = async (req, res) => {
   }
 };
 
+// Helper: check if a date is Sunday
+const isSunday = (date) => date.getDay() === 0;
+
+// Helper: get YYYY-MM-DD string from a Date
+const toDateStr = (date) => date.toISOString().split('T')[0];
+
+// Helper: advance date by 1 day (returns new Date)
+const nextDay = (date) => {
+  const d = new Date(date);
+  d.setDate(d.getDate() + 1);
+  return d;
+};
+
+// Helper: go back 1 day (returns new Date)
+const prevDay = (date) => {
+  const d = new Date(date);
+  d.setDate(d.getDate() - 1);
+  return d;
+};
+
+// @desc    Get dashboard sidebar widget data (stats + streak + calendar + rank)
+// @route   GET /api/scores/dashboard-widget
+// @access  Private/Student
+export const getDashboardWidget = async (req, res) => {
+  try {
+    const studentId = req.student.id;
+    const month = parseInt(req.query.month) || (new Date().getMonth() + 1);
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+
+    // Fetch all data in parallel
+    const [completionsRes, practiceRes, codingRes, leaderboardRes, enrollmentRes] = await Promise.all([
+      // 1. Get ALL completions with item_type for streak + XP calculation
+      supabase
+        .from('topic_completions')
+        .select('completed_at, item_type')
+        .eq('student_id', studentId)
+        .order('completed_at', { ascending: true }),
+      // 2. Practice scores (best per topic)
+      supabase.from('practice_scores').select('percentage').eq('student_id', studentId),
+      // 3. Coding submissions
+      supabase.from('coding_submissions').select('passed').eq('student_id', studentId),
+      // 4. Leaderboard for rank
+      supabase
+        .from('leaderboard')
+        .select('*')
+        .order('total_points', { ascending: false })
+        .limit(10),
+      // 5. Enrollment date
+      supabase
+        .from('student_batches')
+        .select('enrolled_at')
+        .eq('student_id', studentId)
+        .eq('is_active', true)
+        .order('enrolled_at', { ascending: true })
+        .limit(1),
+    ]);
+
+    if (completionsRes.error) throw completionsRes.error;
+    if (practiceRes.error) throw practiceRes.error;
+    if (codingRes.error) throw codingRes.error;
+    if (leaderboardRes.error) throw leaderboardRes.error;
+
+    // --- Calculate XP ---
+    // Video = 10 XP, PPT = 5 XP (one-time, already enforced by unique constraint)
+    // Practice = quiz percentage (best score per topic)
+    // Coding = 100 per passed challenge
+    const completions = completionsRes.data || [];
+    let videoXP = 0;
+    let pptXP = 0;
+    for (const c of completions) {
+      if (c.item_type === 'video') videoXP += 10;
+      if (c.item_type === 'ppt') pptXP += 5;
+    }
+    const practicePoints = (practiceRes.data || []).reduce((sum, p) => sum + Math.round(parseFloat(p.percentage)), 0);
+    const codingPoints = (codingRes.data || []).filter(c => c.passed).length * 100;
+    const totalPoints = videoXP + pptXP + practicePoints + codingPoints;
+
+    const getLevel = (points) => {
+      if (points >= 5000) return { name: 'Legend', tier: 5, nextAt: null };
+      if (points >= 2000) return { name: 'Expert', tier: 4, nextAt: 5000 };
+      if (points >= 1000) return { name: 'Advanced', tier: 3, nextAt: 2000 };
+      if (points >= 300) return { name: 'Intermediate', tier: 2, nextAt: 1000 };
+      return { name: 'Beginner', tier: 1, nextAt: 300 };
+    };
+    const level = getLevel(totalPoints);
+
+    // --- Build active days set (dates where student completed at least 1 item) ---
+    const activeDays = new Set();
+    for (const c of completions) {
+      if (c.completed_at) {
+        activeDays.add(toDateStr(new Date(c.completed_at)));
+      }
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // --- Enrollment date ---
+    const enrollmentDateRaw = enrollmentRes.data?.[0]?.enrolled_at || null;
+    const enrollmentDate = enrollmentDateRaw ? new Date(enrollmentDateRaw) : null;
+    if (enrollmentDate) enrollmentDate.setHours(0, 0, 0, 0);
+
+    // --- Current Streak ---
+    // Count consecutive working days (Mon-Sat) going backwards from today/yesterday
+    // where student has activity. Resets to 0 on first missed working day.
+    let currentStreak = 0;
+    let checkDate = new Date(today);
+
+    // If today is Sunday, start from Saturday
+    if (isSunday(checkDate)) {
+      checkDate = prevDay(checkDate);
+    }
+    // If today is a working day but no activity yet, check from previous working day
+    if (!activeDays.has(toDateStr(checkDate))) {
+      checkDate = prevDay(checkDate);
+      // Skip Sundays going backwards
+      while (isSunday(checkDate)) {
+        checkDate = prevDay(checkDate);
+      }
+    }
+
+    // Count backwards, skipping Sundays
+    while (activeDays.has(toDateStr(checkDate))) {
+      currentStreak++;
+      checkDate = prevDay(checkDate);
+      // Skip Sundays
+      while (isSunday(checkDate)) {
+        checkDate = prevDay(checkDate);
+      }
+      // Don't go before enrollment
+      if (enrollmentDate && checkDate < enrollmentDate) break;
+    }
+
+    // --- Best Streak ---
+    // Find the longest consecutive working-day streak (skipping Sundays)
+    let bestStreak = 0;
+    if (enrollmentDate) {
+      let tempStreak = 0;
+      let d = new Date(enrollmentDate);
+      while (d <= today) {
+        if (isSunday(d)) {
+          // Skip Sundays, don't break streak
+          d = nextDay(d);
+          continue;
+        }
+        if (activeDays.has(toDateStr(d))) {
+          tempStreak++;
+          bestStreak = Math.max(bestStreak, tempStreak);
+        } else {
+          tempStreak = 0;
+        }
+        d = nextDay(d);
+      }
+    }
+
+    // --- Consistency Score ---
+    // From enrollment to today: +1 for each active working day, -1 for each missed working day
+    // Sundays are excluded entirely
+    let consistencyScore = 0;
+    if (enrollmentDate) {
+      let d = new Date(enrollmentDate);
+      while (d <= today) {
+        if (!isSunday(d)) {
+          if (activeDays.has(toDateStr(d))) {
+            consistencyScore++;
+          } else {
+            consistencyScore = Math.max(0, consistencyScore - 1);
+          }
+        }
+        d = nextDay(d);
+      }
+    }
+
+    // --- Build Calendar for requested month ---
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const calendar = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(year, month - 1, day);
+      const dateStr = toDateStr(date);
+
+      let status;
+      if (date > today) {
+        status = 'future';
+      } else if (isSunday(date)) {
+        status = 'holiday';
+      } else if (activeDays.has(dateStr)) {
+        status = 'completed';
+      } else {
+        status = 'missed';
+      }
+
+      calendar.push({ day, date: dateStr, status });
+    }
+
+    // --- Rank data ---
+    const topStudents = (leaderboardRes.data || []).slice(0, 5).map((row, i) => ({
+      rank: i + 1,
+      _id: row.student_id,
+      name: row.student_name,
+      totalPoints: row.total_points,
+      isCurrentUser: row.student_id === studentId,
+    }));
+
+    let myRank = topStudents.find(s => s.isCurrentUser)?.rank || null;
+    if (!myRank) {
+      const { data: myEntry } = await supabase
+        .from('leaderboard')
+        .select('total_points')
+        .eq('student_id', studentId)
+        .maybeSingle();
+
+      if (myEntry) {
+        const { count } = await supabase
+          .from('leaderboard')
+          .select('*', { count: 'exact', head: true })
+          .gt('total_points', myEntry.total_points);
+        myRank = (count || 0) + 1;
+      }
+    }
+
+    res.json({
+      stats: {
+        totalPoints,
+        videoXP,
+        pptXP,
+        practicePoints,
+        codingPoints,
+        level: level.name,
+        levelTier: level.tier,
+        nextLevelAt: level.nextAt,
+        pointsToNextLevel: level.nextAt ? level.nextAt - totalPoints : 0,
+      },
+      streak: {
+        currentStreak,
+        bestStreak,
+        consistencyScore,
+      },
+      calendar: {
+        month,
+        year,
+        days: calendar,
+        enrollmentDate: enrollmentDateRaw,
+      },
+      rank: {
+        myRank,
+        topStudents,
+      },
+    });
+  } catch (error) {
+    handleError(res, error, 'scoreController');
+  }
+};
+
 /* -------------------- LEADERBOARD CACHE (60s TTL) -------------------- */
 let leaderboardCache = { data: null, ts: 0 };
 const LEADERBOARD_TTL = 60_000;

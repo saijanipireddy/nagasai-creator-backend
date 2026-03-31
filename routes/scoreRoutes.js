@@ -13,6 +13,7 @@ import {
   getPracticeAttemptDetail,
   getMyProgress,
   getLeaderboard,
+  getDashboardWidget,
   markComplete,
   getCompletions,
 } from '../controllers/scoreController.js';
@@ -31,6 +32,7 @@ router.get('/coding-submission/:topicId', getCodingSubmission);
 router.post('/complete', validate(markCompleteSchema), markComplete);
 router.get('/completions', getCompletions);
 router.get('/my-progress', getMyProgress);
+router.get('/dashboard-widget', getDashboardWidget);
 router.get('/leaderboard', getLeaderboard);
 
 export default router;
