@@ -1,4 +1,5 @@
 import supabase from '../config/db.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 /* ---------- Lightweight in-memory cache ---------- */
 const cache = new Map();
@@ -59,7 +60,7 @@ export const getJobs = async (req, res) => {
     setCache(cacheKey, response);
     res.json(response);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'jobController');
   }
 };
 
@@ -77,7 +78,7 @@ export const getAllJobs = async (req, res) => {
 
     res.json({ jobs: jobs.map(mapJob) });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'jobController');
   }
 };
 
@@ -98,7 +99,7 @@ export const getJobById = async (req, res) => {
 
     res.json(mapJob(job));
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'jobController');
   }
 };
 
@@ -131,7 +132,7 @@ export const createJob = async (req, res) => {
     invalidateJobCache();
     res.status(201).json(mapJob(job));
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'jobController');
   }
 };
 
@@ -170,7 +171,7 @@ export const updateJob = async (req, res) => {
     invalidateJobCache();
     res.json(mapJob(job));
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'jobController');
   }
 };
 
@@ -189,6 +190,6 @@ export const deleteJob = async (req, res) => {
     invalidateJobCache();
     res.json({ message: 'Job posting deleted' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'jobController');
   }
 };

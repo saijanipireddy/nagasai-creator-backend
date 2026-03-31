@@ -1,4 +1,5 @@
 import supabase from '../config/db.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 // @desc    Submit practice (MCQ) score
 // @route   POST /api/scores/practice
@@ -40,7 +41,7 @@ export const submitPracticeScore = async (req, res) => {
       percentage: data.percentage,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -82,7 +83,7 @@ export const submitCodingScore = async (req, res) => {
       language: data.language,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -213,7 +214,7 @@ export const getCodingSubmission = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -325,7 +326,7 @@ export const submitCodingChallenge = async (req, res) => {
       results,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -415,7 +416,7 @@ export const submitPracticeAttempt = async (req, res) => {
       createdAt: data.created_at,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -452,7 +453,7 @@ export const getPracticeAttempts = async (req, res) => {
 
     res.json({ attempts, bestPercentage: best });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -488,7 +489,7 @@ export const getPracticeAttemptDetail = async (req, res) => {
       createdAt: data.created_at,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -550,7 +551,7 @@ export const getMyProgress = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -594,7 +595,7 @@ export const markComplete = async (req, res) => {
       completedAt: data.completed_at,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -643,7 +644,7 @@ export const getCompletions = async (req, res) => {
 
     res.json({ completions });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };
 
@@ -651,45 +652,73 @@ export const getCompletions = async (req, res) => {
 let leaderboardCache = { data: null, ts: 0 };
 const LEADERBOARD_TTL = 60_000;
 
-// @desc    Get leaderboard (top 50 + current student rank)
+// @desc    Get leaderboard (top 50 + current student rank). Supports ?batchId= for batch-scoped leaderboard.
 // @route   GET /api/scores/leaderboard
 // @access  Private/Student
 export const getLeaderboard = async (req, res) => {
   try {
     const studentId = req.student.id;
+    const { batchId } = req.query;
 
-    // Serve top-50 from cache if fresh
     let topScorers;
-    if (leaderboardCache.data && Date.now() - leaderboardCache.ts < LEADERBOARD_TTL) {
-      topScorers = leaderboardCache.data;
-    } else {
+
+    if (batchId) {
+      // ---- Batch-scoped leaderboard ----
+      // Get students in this batch
+      const { data: enrollments, error: enrErr } = await supabase
+        .from('student_batches')
+        .select('student_id')
+        .eq('batch_id', batchId)
+        .eq('is_active', true);
+
+      if (enrErr) throw enrErr;
+      const batchStudentIds = (enrollments || []).map((e) => e.student_id);
+
+      if (batchStudentIds.length === 0) {
+        return res.json({ leaderboard: [], myRank: null });
+      }
+
       const { data, error } = await supabase
         .from('leaderboard')
         .select('*')
+        .in('student_id', batchStudentIds)
         .order('total_points', { ascending: false })
         .limit(50);
 
       if (error) throw error;
       topScorers = data || [];
-      leaderboardCache = { data: topScorers, ts: Date.now() };
+    } else {
+      // ---- Global leaderboard (cached) ----
+      if (leaderboardCache.data && Date.now() - leaderboardCache.ts < LEADERBOARD_TTL) {
+        topScorers = leaderboardCache.data;
+      } else {
+        const { data, error } = await supabase
+          .from('leaderboard')
+          .select('*')
+          .order('total_points', { ascending: false })
+          .limit(50);
+
+        if (error) throw error;
+        topScorers = data || [];
+        leaderboardCache = { data: topScorers, ts: Date.now() };
+      }
     }
 
     const leaderboard = topScorers.map((row, index) => ({
       rank: index + 1,
-      studentId: row.student_id,
-      studentName: row.student_name,
+      _id: row.student_id,
+      name: row.student_name,
       practicePoints: row.practice_points,
       codingPoints: row.coding_points,
       totalPoints: row.total_points,
       isCurrentUser: row.student_id === studentId,
     }));
 
-    // Find current student's rank (computed fresh each request)
+    // Find current student's rank
     const currentUserEntry = leaderboard.find((e) => e.isCurrentUser);
     let myRank = currentUserEntry ? currentUserEntry.rank : null;
 
-    // If student not in top 50, calculate rank efficiently using count
-    if (!myRank) {
+    if (!myRank && !batchId) {
       const { data: myEntry, error: myErr } = await supabase
         .from('leaderboard')
         .select('total_points')
@@ -713,6 +742,6 @@ export const getLeaderboard = async (req, res) => {
       myRank,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'scoreController');
   }
 };

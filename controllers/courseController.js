@@ -1,4 +1,5 @@
 import supabase from '../config/db.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 /* ---------- Lightweight in-memory cache ---------- */
 const cache = new Map();
@@ -26,8 +27,8 @@ function invalidateCourseCache() {
 // @access  Public
 export const getCourses = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 50), 100);
     const offset = (page - 1) * limit;
 
     const cacheKey = `courses:${page}:${limit}`;
@@ -80,7 +81,7 @@ export const getCourses = async (req, res) => {
     setCache(cacheKey, response);
     res.json(response);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -120,7 +121,7 @@ export const getCourseById = async (req, res) => {
       updatedAt: course.updated_at
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -159,7 +160,7 @@ export const createCourse = async (req, res) => {
       updatedAt: course.updated_at
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -204,7 +205,7 @@ export const updateCourse = async (req, res) => {
       updatedAt: course.updated_at
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -224,7 +225,7 @@ export const deleteCourse = async (req, res) => {
     invalidateCourseCache();
     res.json({ message: 'Course and its topics removed' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -233,8 +234,8 @@ export const deleteCourse = async (req, res) => {
 // @access  Public
 export const getCourseTopics = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 100;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 100);
     const offset = (page - 1) * limit;
 
     const { data: topics, error } = await supabase
@@ -318,7 +319,7 @@ export const getCourseTopics = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -390,7 +391,7 @@ export const getCourseTopicsSummary = async (req, res) => {
     setCache(cacheKey, response);
     res.json(response);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -416,7 +417,7 @@ export const getStats = async (req, res) => {
       draftCourses: totalCourses - publishedCourses
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };
 
@@ -444,6 +445,6 @@ export const reorderCourses = async (req, res) => {
     invalidateCourseCache();
     res.json({ message: 'Courses reordered successfully' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'courseController');
   }
 };

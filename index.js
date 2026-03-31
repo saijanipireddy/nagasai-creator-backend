@@ -17,6 +17,7 @@ import topicRoutes from './routes/topicRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
 import scoreRoutes from './routes/scoreRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
+import batchRoutes from './routes/batchRoutes.js';
 
 /* -------------------- ENV VALIDATION -------------------- */
 const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
@@ -178,6 +179,7 @@ function startServer() {
   app.use('/api/upload', uploadRoutes);
   app.use('/api/scores', scoreRoutes);
   app.use('/api/jobs', jobRoutes);
+  app.use('/api/batches', batchRoutes);
 
   /* -------------------- 404 -------------------- */
   app.use((req, res) => {

@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
 import { generateToken } from '../middleware/auth.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -63,7 +64,7 @@ export const registerAdmin = async (req, res) => {
       token: generateToken(admin.id, 'admin')
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'authController');
   }
 };
 
@@ -105,7 +106,7 @@ export const loginAdmin = async (req, res) => {
       res.status(401).json({ message: 'Invalid email or password' });
     }
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'authController');
   }
 };
 
@@ -120,6 +121,6 @@ export const getAdminProfile = async (req, res) => {
       email: req.admin.email
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'authController');
   }
 };

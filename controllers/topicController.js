@@ -1,4 +1,5 @@
 import supabase from '../config/db.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 // Default empty coding practice object
 const emptyCodingPractice = { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [], testScript: '', testCases: [] };
@@ -23,8 +24,8 @@ const mapTopic = (t, practice = [], codingPractice = null) => ({
 // @access  Public
 export const getTopics = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 50), 100);
     const offset = (page - 1) * limit;
 
     const { data: topics, error } = await supabase
@@ -51,7 +52,7 @@ export const getTopics = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'topicController');
   }
 };
 
@@ -98,7 +99,7 @@ export const getTopicById = async (req, res) => {
 
     res.json(mapTopic(topic, practice, codingPractice));
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'topicController');
   }
 };
 
@@ -168,7 +169,7 @@ export const createTopic = async (req, res) => {
 
     res.status(201).json(mapTopic(topic, practice || [], codingPractice));
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'topicController');
   }
 };
 
@@ -236,7 +237,7 @@ export const updateTopic = async (req, res) => {
 
     res.json(mapTopic(topic, practice, codingPractice));
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'topicController');
   }
 };
 
@@ -255,7 +256,7 @@ export const deleteTopic = async (req, res) => {
 
     res.json({ message: 'Topic removed' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'topicController');
   }
 };
 
@@ -281,6 +282,6 @@ export const reorderTopics = async (req, res) => {
 
     res.json({ message: 'Topics reordered successfully' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'topicController');
   }
 };

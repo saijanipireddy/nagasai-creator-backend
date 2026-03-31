@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
 import { generateToken } from '../middleware/auth.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -57,7 +58,7 @@ export const registerStudent = async (req, res) => {
       token: generateToken(student.id, 'student')
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'studentAuthController');
   }
 };
 
@@ -95,7 +96,7 @@ export const loginStudent = async (req, res) => {
       res.status(401).json({ message: 'Invalid email or password' });
     }
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'studentAuthController');
   }
 };
 
@@ -110,6 +111,6 @@ export const getStudentProfile = async (req, res) => {
       email: req.student.email
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'studentAuthController');
   }
 };

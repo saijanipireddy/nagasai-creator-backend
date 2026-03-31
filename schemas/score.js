@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+export const codingScoreSchema = z.object({
+  topicId: z.string().uuid('Invalid topic ID'),
+  passed: z.boolean(),
+  code: z.string().max(50_000).optional().default(''),
+  output: z.string().max(50_000).optional().default(''),
+  language: z.string().max(30).optional().default('javascript'),
+});
+
 export const codingSubmitSchema = z.object({
   topicId: z.string().uuid('Invalid topic ID'),
   code: z.string().min(1, 'Code is required').max(50_000, 'Code too large'),

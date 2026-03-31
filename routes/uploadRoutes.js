@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import supabase from '../config/db.js';
 import { protect } from '../middleware/auth.js';
+import { handleError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
 
@@ -77,7 +78,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       path: urlData.publicUrl
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    handleError(res, error, 'uploadRoutes');
   }
 });
 

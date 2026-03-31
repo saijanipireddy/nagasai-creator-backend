@@ -29,18 +29,16 @@ const setCache = (key, data) => {
 export const protect = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
-  // If no token provided, allow through with default admin
   if (!authHeader || !authHeader.startsWith('Bearer')) {
-    req.admin = { id: 'default', name: 'Admin', email: 'admin@localhost' };
-    return next();
+    return res.status(401).json({ message: 'Not authorized, no token provided' });
   }
 
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Reject if token has a role claim and it's not 'admin'
-    if (decoded.role && decoded.role !== 'admin') {
+    // Reject if role is missing or not 'admin'
+    if (!decoded.role || decoded.role !== 'admin') {
       return res.status(401).json({ message: 'Not authorized, admin access required' });
     }
 
@@ -73,18 +71,16 @@ export const protect = async (req, res, next) => {
 export const studentProtect = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
-  // If no token provided, allow through with default student
   if (!authHeader || !authHeader.startsWith('Bearer')) {
-    req.student = { id: 'default', name: 'Student', email: 'student@localhost' };
-    return next();
+    return res.status(401).json({ message: 'Not authorized, no token provided' });
   }
 
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Reject if token has a role claim and it's not 'student'
-    if (decoded.role && decoded.role !== 'student') {
+    // Reject if role is missing or not 'student'
+    if (!decoded.role || decoded.role !== 'student') {
       return res.status(401).json({ message: 'Not authorized, student access required' });
     }
 
