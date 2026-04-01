@@ -7,9 +7,11 @@ import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
+import cookieParser from 'cookie-parser';
 import { randomUUID } from 'node:crypto';
 
 import logger from './config/logger.js';
+import { csrfProtect } from './middleware/csrf.js';
 import authRoutes from './routes/authRoutes.js';
 import studentAuthRoutes from './routes/studentAuthRoutes.js';
 import courseRoutes from './routes/courseRoutes.js';
@@ -78,11 +80,14 @@ function startServer() {
 
         callback(new Error('Not allowed by CORS'));
       },
-      credentials: true,
+      credentials: true, // Required for cookies
     })
   );
 
   app.use(helmet());
+
+  /* -------------------- COOKIE PARSER -------------------- */
+  app.use(cookieParser());
 
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -162,15 +167,47 @@ function startServer() {
     });
   });
 
+  // Rate limiters for auth endpoints
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
+  app.use('/api/auth/refresh', authLimiter);
   app.use('/api/student-auth/login', authLimiter);
   app.use('/api/student-auth/register', authLimiter);
+  app.use('/api/student-auth/refresh', authLimiter);
 
   // Coding submit rate limit (before general API limiter)
   app.use('/api/scores/coding-submit', codingSubmitLimiter);
 
   app.use('/api', apiLimiter);
+
+  /* -------------------- CSRF PROTECTION -------------------- */
+  // Apply CSRF protection to all API routes EXCEPT:
+  // - Login/register/refresh (no CSRF cookie exists yet)
+  // - File uploads (multipart forms)
+  // - Health check
+  app.use('/api', (req, res, next) => {
+    // Skip CSRF for auth endpoints (login, register, refresh set the cookie)
+    const skipPaths = [
+      '/api/auth/login',
+      '/api/auth/register',
+      '/api/auth/refresh',
+      '/api/student-auth/login',
+      '/api/student-auth/register',
+      '/api/student-auth/refresh',
+      '/api/health',
+    ];
+
+    if (skipPaths.some((p) => req.originalUrl.startsWith(p))) {
+      return next();
+    }
+
+    // Skip CSRF for file uploads (multipart) — auth middleware still protects these
+    if (req.headers['content-type']?.includes('multipart/form-data')) {
+      return next();
+    }
+
+    return csrfProtect(req, res, next);
+  });
 
   app.use('/api/auth', authRoutes);
   app.use('/api/student-auth', studentAuthRoutes);

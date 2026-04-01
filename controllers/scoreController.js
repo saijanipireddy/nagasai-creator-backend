@@ -248,24 +248,42 @@ export const submitCodingChallenge = async (req, res) => {
     const results = [];
 
     if (isWeb) {
+      // Web tests run client-side (no headless browser on server).
+      // Mitigations against cheating:
+      //  1. Minimum code length to reject trivial/empty submissions
+      //  2. Test count must match the expected number from the test script
+      //  3. Results flagged as client-verified (vs server-verified for Piston)
+      const MIN_CODE_LENGTH = 20;
+      if (code.trim().length < MIN_CODE_LENGTH) {
+        return res.status(400).json({ message: `Code too short. Minimum ${MIN_CODE_LENGTH} characters required.` });
+      }
+
       if (cp.test_script && cp.test_script.trim() && testResults && Array.isArray(testResults) && testResults.length > 0) {
-        // Cap test count to 50 to prevent abuse
+        // Count expected tests from the test script (look for assertion patterns)
+        const assertionPatterns = cp.test_script.match(/\bassert\w*\s*\(|\.toBe|\.toEqual|expect\s*\(|console\.log\s*\(\s*['"]TEST/gi);
+        const expectedTestCount = assertionPatterns ? assertionPatterns.length : 0;
+
+        // Reject if client reports significantly more passes than expected tests
         const capped = testResults.slice(0, 50);
+        if (expectedTestCount > 0 && capped.length > expectedTestCount * 2) {
+          return res.status(400).json({ message: 'Invalid test results: count mismatch' });
+        }
+
         const totalTests = capped.length;
         const passedTests = capped.filter(r => r === 'PASS').length;
         passed = totalTests > 0 && passedTests === totalTests;
-        actualOutput = `[client-reported] ${capped.join('\n')}`;
-        results.push({ total: totalTests, passed: passedTests });
+        actualOutput = `[client-verified] ${capped.join('\n')}`;
+        results.push({ total: totalTests, passed: passedTests, verification: 'client' });
       } else if (cp.test_script && cp.test_script.trim()) {
         // Has test script but no results received
         passed = false;
         actualOutput = 'Test results not received';
-        results.push({ total: 1, passed: 0 });
+        results.push({ total: 1, passed: 0, verification: 'client' });
       } else {
         // No test script - accept as completed (visual practice)
         passed = true;
-        actualOutput = 'Completed';
-        results.push({ total: 0, passed: 0, visual: true });
+        actualOutput = 'Completed (visual)';
+        results.push({ total: 0, passed: 0, visual: true, verification: 'none' });
       }
     } else {
       // Non-web: server executes code and compares output

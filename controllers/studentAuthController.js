@@ -1,9 +1,34 @@
 import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
-import { generateToken } from '../middleware/auth.js';
+import { generateAccessToken, generateRefreshToken, hashToken } from '../middleware/auth.js';
+import { setAuthCookies, clearAuthCookies, generateCsrfToken, REFRESH_TOKEN_MAX_AGE } from '../middleware/cookies.js';
 import { handleError } from '../middleware/errorHandler.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/* ------------------------------------------------------------------ */
+/*  Helper: create tokens, store refresh token, set cookies           */
+/* ------------------------------------------------------------------ */
+const issueTokens = async (res, student) => {
+  const accessToken = generateAccessToken(student.id, 'student');
+  const { token: rawRefresh, hash: refreshHash } = generateRefreshToken();
+  const csrfToken = generateCsrfToken();
+
+  await supabase.from('refresh_tokens').insert({
+    user_id: student.id,
+    user_type: 'student',
+    token_hash: refreshHash,
+    expires_at: new Date(Date.now() + REFRESH_TOKEN_MAX_AGE).toISOString(),
+  });
+
+  setAuthCookies(res, accessToken, rawRefresh, csrfToken);
+
+  return {
+    _id: student.id,
+    name: student.name,
+    email: student.email,
+  };
+};
 
 // @desc    Register student
 // @route   POST /api/student-auth/register
@@ -44,21 +69,17 @@ export const registerStudent = async (req, res) => {
       .insert({
         name,
         email: email.toLowerCase(),
-        password: hashedPassword
+        password: hashedPassword,
       })
       .select('id, name, email')
       .single();
 
     if (error) throw error;
 
-    res.status(201).json({
-      _id: student.id,
-      name: student.name,
-      email: student.email,
-      token: generateToken(student.id, 'student')
-    });
+    const userData = await issueTokens(res, student);
+    res.status(201).json(userData);
   } catch (error) {
-    handleError(res, error, 'studentAuthController');
+    handleError(res, error, 'studentAuthController:register');
   }
 };
 
@@ -85,18 +106,90 @@ export const loginStudent = async (req, res) => {
 
     const isMatch = await bcrypt.compare(password, student.password);
 
-    if (isMatch) {
-      res.json({
-        _id: student.id,
-        name: student.name,
-        email: student.email,
-        token: generateToken(student.id, 'student')
-      });
-    } else {
-      res.status(401).json({ message: 'Invalid email or password' });
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
+
+    const userData = await issueTokens(res, student);
+    res.json(userData);
   } catch (error) {
-    handleError(res, error, 'studentAuthController');
+    handleError(res, error, 'studentAuthController:login');
+  }
+};
+
+// @desc    Refresh access token using refresh token cookie
+// @route   POST /api/student-auth/refresh
+// @access  Cookie-based
+export const refreshTokenStudent = async (req, res) => {
+  const rawToken = req.cookies?.refresh_token;
+
+  if (!rawToken) {
+    clearAuthCookies(res);
+    return res.status(401).json({ message: 'No refresh token provided' });
+  }
+
+  try {
+    const tokenHash = hashToken(rawToken);
+
+    const { data: stored, error } = await supabase
+      .from('refresh_tokens')
+      .select('*')
+      .eq('token_hash', tokenHash)
+      .eq('user_type', 'student')
+      .is('revoked_at', null)
+      .single();
+
+    if (error || !stored || new Date(stored.expires_at) < new Date()) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: 'Invalid or expired refresh token' });
+    }
+
+    const { data: student } = await supabase
+      .from('students')
+      .select('id, name, email')
+      .eq('id', stored.user_id)
+      .single();
+
+    if (!student) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    // Rotate: revoke old token
+    await supabase
+      .from('refresh_tokens')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('id', stored.id);
+
+    const userData = await issueTokens(res, student);
+    res.json(userData);
+  } catch (error) {
+    clearAuthCookies(res);
+    handleError(res, error, 'studentAuthController:refresh');
+  }
+};
+
+// @desc    Logout student — revoke refresh token & clear cookies
+// @route   POST /api/student-auth/logout
+// @access  Cookie-based
+export const logoutStudent = async (req, res) => {
+  try {
+    const rawToken = req.cookies?.refresh_token;
+
+    if (rawToken) {
+      const tokenHash = hashToken(rawToken);
+      await supabase
+        .from('refresh_tokens')
+        .update({ revoked_at: new Date().toISOString() })
+        .eq('token_hash', tokenHash)
+        .eq('user_type', 'student');
+    }
+
+    clearAuthCookies(res);
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    clearAuthCookies(res);
+    res.json({ message: 'Logged out successfully' });
   }
 };
 
@@ -108,9 +201,9 @@ export const getStudentProfile = async (req, res) => {
     res.json({
       _id: req.student.id,
       name: req.student.name,
-      email: req.student.email
+      email: req.student.email,
     });
   } catch (error) {
-    handleError(res, error, 'studentAuthController');
+    handleError(res, error, 'studentAuthController:profile');
   }
 };

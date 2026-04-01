@@ -1,9 +1,35 @@
 import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
-import { generateToken } from '../middleware/auth.js';
+import { generateAccessToken, generateRefreshToken, hashToken } from '../middleware/auth.js';
+import { setAuthCookies, clearAuthCookies, generateCsrfToken, REFRESH_TOKEN_MAX_AGE } from '../middleware/cookies.js';
 import { handleError } from '../middleware/errorHandler.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/* ------------------------------------------------------------------ */
+/*  Helper: create tokens, store refresh token, set cookies           */
+/* ------------------------------------------------------------------ */
+const issueTokens = async (res, admin) => {
+  const accessToken = generateAccessToken(admin.id, 'admin');
+  const { token: rawRefresh, hash: refreshHash } = generateRefreshToken();
+  const csrfToken = generateCsrfToken();
+
+  // Store hashed refresh token in DB
+  await supabase.from('refresh_tokens').insert({
+    user_id: admin.id,
+    user_type: 'admin',
+    token_hash: refreshHash,
+    expires_at: new Date(Date.now() + REFRESH_TOKEN_MAX_AGE).toISOString(),
+  });
+
+  setAuthCookies(res, accessToken, rawRefresh, csrfToken);
+
+  return {
+    _id: admin.id,
+    name: admin.name,
+    email: admin.email,
+  };
+};
 
 // @desc    Register admin
 // @route   POST /api/auth/register
@@ -50,21 +76,17 @@ export const registerAdmin = async (req, res) => {
       .insert({
         name,
         email: email.toLowerCase(),
-        password: hashedPassword
+        password: hashedPassword,
       })
       .select('id, name, email')
       .single();
 
     if (error) throw error;
 
-    res.status(201).json({
-      _id: admin.id,
-      name: admin.name,
-      email: admin.email,
-      token: generateToken(admin.id, 'admin')
-    });
+    const userData = await issueTokens(res, admin);
+    res.status(201).json(userData);
   } catch (error) {
-    handleError(res, error, 'authController');
+    handleError(res, error, 'authController:register');
   }
 };
 
@@ -95,18 +117,95 @@ export const loginAdmin = async (req, res) => {
 
     const isMatch = await bcrypt.compare(password, admin.password);
 
-    if (isMatch) {
-      res.json({
-        _id: admin.id,
-        name: admin.name,
-        email: admin.email,
-        token: generateToken(admin.id, 'admin')
-      });
-    } else {
-      res.status(401).json({ message: 'Invalid email or password' });
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
+
+    const userData = await issueTokens(res, admin);
+    res.json(userData);
   } catch (error) {
-    handleError(res, error, 'authController');
+    handleError(res, error, 'authController:login');
+  }
+};
+
+// @desc    Refresh access token using refresh token cookie
+// @route   POST /api/auth/refresh
+// @access  Cookie-based
+export const refreshToken = async (req, res) => {
+  const rawToken = req.cookies?.refresh_token;
+
+  if (!rawToken) {
+    clearAuthCookies(res);
+    return res.status(401).json({ message: 'No refresh token provided' });
+  }
+
+  try {
+    const tokenHash = hashToken(rawToken);
+
+    // Look up the refresh token in DB
+    const { data: stored, error } = await supabase
+      .from('refresh_tokens')
+      .select('*')
+      .eq('token_hash', tokenHash)
+      .eq('user_type', 'admin')
+      .is('revoked_at', null)
+      .single();
+
+    if (error || !stored || new Date(stored.expires_at) < new Date()) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: 'Invalid or expired refresh token' });
+    }
+
+    // Verify the admin still exists
+    const { data: admin } = await supabase
+      .from('admins')
+      .select('id, name, email')
+      .eq('id', stored.user_id)
+      .single();
+
+    if (!admin) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    // Rotate: revoke old token
+    await supabase
+      .from('refresh_tokens')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('id', stored.id);
+
+    // Issue fresh tokens
+    const userData = await issueTokens(res, admin);
+    res.json(userData);
+  } catch (error) {
+    clearAuthCookies(res);
+    handleError(res, error, 'authController:refresh');
+  }
+};
+
+// @desc    Logout admin — revoke all refresh tokens & clear cookies
+// @route   POST /api/auth/logout
+// @access  Cookie-based
+export const logoutAdmin = async (req, res) => {
+  try {
+    const rawToken = req.cookies?.refresh_token;
+
+    if (rawToken) {
+      const tokenHash = hashToken(rawToken);
+
+      // Revoke this specific refresh token
+      await supabase
+        .from('refresh_tokens')
+        .update({ revoked_at: new Date().toISOString() })
+        .eq('token_hash', tokenHash)
+        .eq('user_type', 'admin');
+    }
+
+    clearAuthCookies(res);
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    clearAuthCookies(res);
+    res.json({ message: 'Logged out successfully' });
   }
 };
 
@@ -118,9 +217,9 @@ export const getAdminProfile = async (req, res) => {
     res.json({
       _id: req.admin.id,
       name: req.admin.name,
-      email: req.admin.email
+      email: req.admin.email,
     });
   } catch (error) {
-    handleError(res, error, 'authController');
+    handleError(res, error, 'authController:profile');
   }
 };
