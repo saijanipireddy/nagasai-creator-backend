@@ -21,12 +21,16 @@ const issueTokens = async (res, student) => {
     expires_at: new Date(Date.now() + REFRESH_TOKEN_MAX_AGE).toISOString(),
   });
 
+  // Set HttpOnly cookies (works when same-origin / cookies not blocked)
   setAuthCookies(res, accessToken, rawRefresh, csrfToken);
 
+  // ALSO return tokens in body (works cross-origin even when cookies are blocked)
   return {
     _id: student.id,
     name: student.name,
     email: student.email,
+    accessToken,
+    refreshToken: rawRefresh,
   };
 };
 
@@ -121,7 +125,14 @@ export const loginStudent = async (req, res) => {
 // @route   POST /api/student-auth/refresh
 // @access  Cookie-based
 export const refreshTokenStudent = async (req, res) => {
-  const rawToken = req.cookies?.refresh_token;
+  // Accept refresh token from cookie (primary) or Authorization header (cross-origin fallback)
+  let rawToken = req.cookies?.refresh_token;
+  if (!rawToken) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      rawToken = authHeader.split(' ')[1];
+    }
+  }
 
   if (!rawToken) {
     clearAuthCookies(res);

@@ -15,6 +15,14 @@ export const csrfProtect = (req, res, next) => {
     return next();
   }
 
+  // If an Authorization header is present, CSRF protection is not needed.
+  // Reason: only JavaScript can set the Authorization header — HTML forms cannot.
+  // This proves the request originates from our SPA, not a forged form submission.
+  if (req.headers.authorization) {
+    return next();
+  }
+
+  // For cookie-only auth: verify double-submit CSRF token
   const cookieToken = req.cookies?.csrf_token;
   const headerToken = req.headers['x-csrf-token'];
 
