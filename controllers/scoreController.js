@@ -205,7 +205,9 @@ export const runCode = async (req, res) => {
     clearTimeout(timeout);
 
     if (!response.ok) {
-      return res.status(502).json({ message: 'Code execution service unavailable' });
+      const errorBody = await response.text().catch(() => '');
+      console.error(`Piston API error: ${response.status} ${response.statusText}`, errorBody);
+      return res.status(502).json({ message: 'Code execution service unavailable', status: response.status, detail: errorBody.slice(0, 200) });
     }
 
     const data = await response.json();
@@ -214,6 +216,7 @@ export const runCode = async (req, res) => {
     if (err.name === 'AbortError') {
       return res.status(504).json({ message: 'Code execution timed out (15s limit)' });
     }
+    console.error('Piston proxy error:', err.message);
     res.status(500).json({ message: `Execution error: ${err.message}` });
   }
 };
