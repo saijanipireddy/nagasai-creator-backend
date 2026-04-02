@@ -2,7 +2,7 @@ import supabase from '../config/db.js';
 import { handleError } from '../middleware/errorHandler.js';
 
 // Default empty coding practice object
-const emptyCodingPractice = { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [], testScript: '', testCases: [] };
+const emptyCodingPractice = { language: 'javascript', title: '', description: '', referenceImage: '', imageLinks: [], starterCode: '', expectedOutput: '', hints: [], testScript: '', testCases: [], difficulty: 'easy', maxScore: 100 };
 
 // Helper: map topic from Supabase to API format
 const mapTopic = (t, practice = [], codingPractice = null) => ({
@@ -95,6 +95,8 @@ export const getTopicById = async (req, res) => {
       hints: cp.hints,
       testScript: cp.test_script || '',
       testCases: cp.test_cases || [],
+      difficulty: cp.difficulty || 'easy',
+      maxScore: cp.max_score || 100,
     } : null;
 
     res.json(mapTopic(topic, practice, codingPractice));
@@ -164,6 +166,8 @@ export const createTopic = async (req, res) => {
         hints: codingPractice.hints || [],
         test_script: codingPractice.testScript || '',
         test_cases: codingPractice.testCases || [],
+        difficulty: codingPractice.difficulty || 'easy',
+        max_score: codingPractice.maxScore || 100,
       });
     }
 

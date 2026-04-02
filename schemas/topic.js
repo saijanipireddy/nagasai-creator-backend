@@ -18,8 +18,10 @@ const codingPracticeSchema = z.object({
   testScript: z.string().max(50000).optional().nullable(),
   testCases: z.array(z.object({
     input: z.string().max(10000).optional(),
-    output: z.string().max(10000).optional(),
+    expectedOutput: z.string().max(10000).optional(),
   })).max(50).optional().nullable(),
+  difficulty: z.enum(['easy', 'medium', 'hard']).optional().default('easy'),
+  maxScore: z.number().int().min(1).max(1000).optional().default(100),
 });
 
 export const createTopicSchema = z.object({
