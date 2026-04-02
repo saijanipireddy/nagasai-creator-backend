@@ -20,6 +20,7 @@ import uploadRoutes from './routes/uploadRoutes.js';
 import scoreRoutes from './routes/scoreRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import batchRoutes from './routes/batchRoutes.js';
+import resumeRoutes from './routes/resumeRoutes.js';
 
 /* -------------------- ENV VALIDATION -------------------- */
 const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
@@ -153,6 +154,14 @@ function startServer() {
     message: { message: 'Too many code submissions, please wait before trying again.' }
   });
 
+  const resumeGenerateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Too many resume generation requests, please try again in 15 minutes.' }
+  });
+
   /* -------------------- ROUTES -------------------- */
   app.get('/', (req, res) => {
     res.send('Nagasai Creator Backend is live');
@@ -177,6 +186,9 @@ function startServer() {
 
   // Coding submit rate limit (before general API limiter)
   app.use('/api/scores/coding-submit', codingSubmitLimiter);
+
+  // Resume generation rate limit
+  app.use('/api/resume/generate', resumeGenerateLimiter);
 
   app.use('/api', apiLimiter);
 
@@ -217,6 +229,7 @@ function startServer() {
   app.use('/api/scores', scoreRoutes);
   app.use('/api/jobs', jobRoutes);
   app.use('/api/batches', batchRoutes);
+  app.use('/api/resume', resumeRoutes);
 
   /* -------------------- 404 -------------------- */
   app.use((req, res) => {
