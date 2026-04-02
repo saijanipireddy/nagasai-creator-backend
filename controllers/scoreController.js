@@ -181,6 +181,43 @@ const executePiston = async (sourceCode, language, stdin = '') => {
   }
 };
 
+// @desc    Execute code via Piston (proxy for frontend Run button)
+// @route   POST /api/scores/run-code
+// @access  Private/Student
+export const runCode = async (req, res) => {
+  try {
+    const { language, version, files, stdin } = req.body;
+
+    if (!language || !files || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ message: 'language and files are required' });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    const response = await fetch(process.env.PISTON_API_URL || 'https://emkc.org/api/v2/piston/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language, version, files, stdin: stdin || '' }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      return res.status(502).json({ message: 'Code execution service unavailable' });
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return res.status(504).json({ message: 'Code execution timed out (15s limit)' });
+    }
+    res.status(500).json({ message: `Execution error: ${err.message}` });
+  }
+};
+
 // @desc    Get student's existing coding submission for a topic
 // @route   GET /api/scores/coding-submission/:topicId
 // @access  Private/Student

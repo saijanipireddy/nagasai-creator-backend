@@ -8,6 +8,7 @@ import {
   submitCodingScore,
   submitCodingChallenge,
   getCodingSubmission,
+  runCode,
   submitPracticeAttempt,
   getPracticeAttempts,
   getPracticeAttemptDetail,
@@ -29,6 +30,7 @@ router.get('/practice-attempt/:attemptId', getPracticeAttemptDetail);
 router.post('/coding', validate(codingScoreSchema), submitCodingScore);
 router.post('/coding-submit', validate(codingSubmitSchema), submitCodingChallenge);
 router.get('/coding-submission/:topicId', getCodingSubmission);
+router.post('/run-code', runCode);
 router.post('/complete', validate(markCompleteSchema), markComplete);
 router.get('/completions', getCompletions);
 router.get('/my-progress', getMyProgress);
