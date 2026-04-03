@@ -411,11 +411,25 @@ export const submitCodingChallenge = async (req, res) => {
     }
 
     const isWeb = ['html', 'css', 'javascript'].includes(cp.language);
+    const isClientExecuted = isWeb || cp.language === 'python' || cp.language === 'sql';
     let passed = false;
     let actualOutput = '';
     const results = [];
 
-    if (isWeb) {
+    if (isClientExecuted && !isWeb && testResults && Array.isArray(testResults) && testResults.length > 0) {
+      // Python/SQL: test cases evaluated in browser, results sent from frontend
+      const MIN_CODE_LENGTH = 10;
+      if (code.trim().length < MIN_CODE_LENGTH) {
+        return res.status(400).json({ message: `Code too short. Minimum ${MIN_CODE_LENGTH} characters required.` });
+      }
+
+      const capped = testResults.slice(0, 50);
+      const totalTests = capped.length;
+      const passedTests = capped.filter(r => r === 'PASS').length;
+      passed = totalTests > 0 && passedTests === totalTests;
+      actualOutput = `[client-verified] ${capped.join('\n')}`;
+      results.push({ total: totalTests, passed: passedTests, verification: 'client' });
+    } else if (isWeb) {
       // Web tests run client-side (no headless browser on server).
       // Mitigations against cheating:
       //  1. Minimum code length to reject trivial/empty submissions
