@@ -24,6 +24,8 @@ import {
   onboardStudent,
   getMyEnrolledCourses,
   checkCourseAccess,
+  getBatchProgress,
+  getStudentProgress,
 } from '../controllers/batchController.js';
 
 const router = express.Router();
@@ -40,6 +42,8 @@ router.post('/', protect, validate(createBatchSchema), createBatch);
 
 // ---- Admin: dynamic /:id routes ----
 router.get('/:id', protect, getBatchById);
+router.get('/:id/progress', protect, getBatchProgress);
+router.get('/:id/students/:studentId/progress', protect, getStudentProgress);
 router.put('/:id', protect, validate(updateBatchSchema), updateBatch);
 router.delete('/:id', protect, deleteBatch);
 

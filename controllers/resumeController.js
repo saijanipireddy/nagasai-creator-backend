@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import logger from '../config/logger.js';
 import { handleError } from '../middleware/errorHandler.js';
 
 const MODELS = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'];
@@ -87,7 +88,7 @@ Instructions:
     let lastError = null;
     for (const modelName of MODELS) {
       try {
-        console.log(`Trying Groq model: ${modelName}`);
+        logger.info(`Trying Groq model: ${modelName}`);
         const chatCompletion = await groq.chat.completions.create({
           messages: [
             { role: 'system', content: 'You are an expert ATS resume writer. Always respond with valid JSON only. No markdown, no code blocks, no extra text.' },
@@ -101,7 +102,7 @@ Instructions:
 
         const responseText = chatCompletion.choices[0]?.message?.content;
         if (!responseText) {
-          console.error(`Model ${modelName} returned empty response, trying next...`);
+          logger.warn(`Model ${modelName} returned empty response, trying next...`);
           continue;
         }
 
@@ -113,15 +114,15 @@ Instructions:
           if (jsonMatch) {
             resumeData = JSON.parse(jsonMatch[0]);
           } else {
-            console.error(`Model ${modelName} returned invalid JSON, trying next...`);
+            logger.warn(`Model ${modelName} returned invalid JSON, trying next...`);
             continue;
           }
         }
 
-        console.log(`Success with Groq model: ${modelName}`);
+        logger.info(`Success with Groq model: ${modelName}`);
         return res.json({ message: 'Resume generated successfully', data: resumeData });
       } catch (err) {
-        console.error(`Groq model ${modelName} failed:`, err.status, err.message?.slice(0, 200));
+        logger.error({ status: err.status, message: err.message?.slice(0, 200) }, `Groq model ${modelName} failed`);
         lastError = err;
         if (err.status === 429 || err.status === 404 || err.status === 503) {
           continue;
@@ -138,7 +139,7 @@ Instructions:
     }
     handleError(res, lastError || new Error('All AI models failed'), 'generateResume');
   } catch (err) {
-    console.error('Resume Controller Error:', err.message);
+    logger.error({ err }, 'Resume Controller Error');
     handleError(res, err, 'generateResume');
   }
 };

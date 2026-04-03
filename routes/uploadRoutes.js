@@ -1,14 +1,24 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
 import supabase from '../config/db.js';
+import logger from '../config/logger.js';
 import { protect } from '../middleware/auth.js';
 import { handleError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
 
-// Use memory storage — file stays in RAM, then uploads to Supabase Storage
-const storage = multer.memoryStorage();
+// Use disk storage instead of memory to avoid OOM with concurrent uploads.
+// Files are written to a temp dir, streamed to Supabase, then cleaned up.
+const storage = multer.diskStorage({
+  destination: os.tmpdir(),
+  filename: (req, file, cb) => {
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  },
+});
 
 const fileFilter = (req, file, cb) => {
   const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
@@ -37,7 +47,7 @@ const ensureBucket = async () => {
       allowedMimeTypes: ['application/pdf', 'image/jpeg', 'image/png', 'image/gif']
     });
     if (error && process.env.NODE_ENV !== 'production') {
-      console.error('Failed to create bucket:', error.message);
+      logger.error({ err: error }, 'Failed to create bucket');
     }
   }
 };
@@ -47,18 +57,19 @@ ensureBucket();
 // @route   POST /api/upload
 // @access  Private (Admin)
 router.post('/', protect, upload.single('file'), async (req, res) => {
+  const tempPath = req.file?.path;
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const ext = path.extname(req.file.originalname);
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+    // Read from temp file (disk-based, not RAM)
+    const fileBuffer = await fs.readFile(tempPath);
 
     // Upload to Supabase Storage
     const { data, error } = await supabase.storage
       .from(BUCKET)
-      .upload(uniqueName, req.file.buffer, {
+      .upload(req.file.filename, fileBuffer, {
         contentType: req.file.mimetype,
         upsert: false
       });
@@ -74,11 +85,14 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
 
     res.json({
       message: 'File uploaded successfully',
-      filename: uniqueName,
+      filename: req.file.filename,
       path: urlData.publicUrl
     });
   } catch (error) {
     handleError(res, error, 'uploadRoutes');
+  } finally {
+    // Clean up temp file
+    if (tempPath) fs.unlink(tempPath).catch(() => {});
   }
 });
 

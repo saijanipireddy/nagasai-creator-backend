@@ -21,6 +21,7 @@ import scoreRoutes from './routes/scoreRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import batchRoutes from './routes/batchRoutes.js';
 import resumeRoutes from './routes/resumeRoutes.js';
+import announcementRoutes from './routes/announcementRoutes.js';
 
 /* -------------------- ENV VALIDATION -------------------- */
 const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
@@ -130,11 +131,25 @@ function startServer() {
   );
 
   /* -------------------- RATE LIMITING -------------------- */
+  // Use user ID from JWT when available, fall back to IP for unauthenticated routes.
+  // This prevents students on the same WiFi/NAT from blocking each other.
+  const getUserKey = (req) => {
+    try {
+      const token = req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
+      if (token) {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+        if (payload.id) return `user:${payload.id}`;
+      }
+    } catch { /* fall through to IP */ }
+    return req.ip;
+  };
+
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => req.ip, // auth routes are pre-login, IP is correct here
     message: { message: 'Too many attempts, please try again later.' }
   });
 
@@ -143,14 +158,16 @@ function startServer() {
     max: 200,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: getUserKey,
     message: { message: 'Too many requests, please try again later.' }
   });
 
   const codingSubmitLimiter = rateLimit({
     windowMs: 1 * 60 * 1000,
-    max: 10,
+    max: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: getUserKey,
     message: { message: 'Too many code submissions, please wait before trying again.' }
   });
 
@@ -159,6 +176,7 @@ function startServer() {
     max: 5,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: getUserKey,
     message: { message: 'Too many resume generation requests, please try again in 15 minutes.' }
   });
 
@@ -230,6 +248,7 @@ function startServer() {
   app.use('/api/jobs', jobRoutes);
   app.use('/api/batches', batchRoutes);
   app.use('/api/resume', resumeRoutes);
+  app.use('/api/announcements', announcementRoutes);
 
   /* -------------------- 404 -------------------- */
   app.use((req, res) => {

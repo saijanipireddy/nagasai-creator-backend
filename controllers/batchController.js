@@ -579,3 +579,234 @@ export const checkCourseAccess = async (req, res) => {
     handleError(res, error, 'batchController');
   }
 };
+
+// ============================================
+// Student Progress (Admin)
+// ============================================
+
+// @desc    Get student progress overview for a batch
+// @route   GET /api/batches/:id/progress
+// @access  Private/Admin
+export const getBatchProgress = async (req, res) => {
+  try {
+    const batchId = req.params.id;
+
+    // Get enrolled students
+    const { data: enrollments, error: enrErr } = await supabase
+      .from('student_batches')
+      .select('student_id, is_active, payment_status')
+      .eq('batch_id', batchId);
+    if (enrErr) throw enrErr;
+    if (!enrollments || enrollments.length === 0) {
+      return res.json({ students: [], courses: [] });
+    }
+
+    const studentIds = enrollments.map(e => e.student_id);
+
+    // Get batch courses
+    const { data: batchCourses } = await supabase
+      .from('batch_courses')
+      .select('course_id')
+      .eq('batch_id', batchId);
+    const courseIds = (batchCourses || []).map(bc => bc.course_id);
+
+    // Parallel fetch: students, courses, topics, completions, practice scores, coding submissions
+    const [studentsRes, coursesRes, topicsRes, completionsRes, practiceRes, codingRes] = await Promise.all([
+      supabase.from('students').select('id, name, email').in('id', studentIds),
+      courseIds.length > 0
+        ? supabase.from('courses').select('id, name').in('id', courseIds)
+        : { data: [], error: null },
+      courseIds.length > 0
+        ? supabase.from('topics').select('id, course_id, name').in('course_id', courseIds)
+        : { data: [], error: null },
+      supabase.from('topic_completions').select('student_id, topic_id, item_type').in('student_id', studentIds),
+      supabase.from('practice_scores').select('student_id, topic_id, percentage').in('student_id', studentIds),
+      supabase.from('coding_submissions').select('student_id, topic_id, passed').in('student_id', studentIds),
+    ]);
+
+    if (studentsRes.error) throw studentsRes.error;
+
+    const topics = topicsRes.data || [];
+    const topicsByCourse = {};
+    for (const t of topics) {
+      if (!topicsByCourse[t.course_id]) topicsByCourse[t.course_id] = [];
+      topicsByCourse[t.course_id].push(t.id);
+    }
+
+    // Build per-student completion map
+    const completionsByStudent = {};
+    for (const c of completionsRes.data || []) {
+      if (!completionsByStudent[c.student_id]) completionsByStudent[c.student_id] = new Set();
+      completionsByStudent[c.student_id].add(c.topic_id);
+    }
+
+    // Build per-student practice scores
+    const practiceByStudent = {};
+    for (const p of practiceRes.data || []) {
+      if (!practiceByStudent[p.student_id]) practiceByStudent[p.student_id] = { total: 0, count: 0 };
+      practiceByStudent[p.student_id].total += parseFloat(p.percentage);
+      practiceByStudent[p.student_id].count++;
+    }
+
+    // Build per-student coding stats
+    const codingByStudent = {};
+    for (const c of codingRes.data || []) {
+      if (!codingByStudent[c.student_id]) codingByStudent[c.student_id] = { total: 0, passed: 0 };
+      codingByStudent[c.student_id].total++;
+      if (c.passed) codingByStudent[c.student_id].passed++;
+    }
+
+    // Build enrollment status map
+    const enrollmentMap = {};
+    for (const e of enrollments) {
+      enrollmentMap[e.student_id] = { isActive: e.is_active, paymentStatus: e.payment_status };
+    }
+
+    const totalTopics = topics.length;
+
+    const students = (studentsRes.data || []).map(s => {
+      const completed = completionsByStudent[s.id]?.size || 0;
+      const practice = practiceByStudent[s.id];
+      const coding = codingByStudent[s.id];
+      const enrollment = enrollmentMap[s.id] || {};
+
+      return {
+        _id: s.id,
+        name: s.name,
+        email: s.email,
+        isActive: enrollment.isActive,
+        paymentStatus: enrollment.paymentStatus,
+        topicsCompleted: completed,
+        totalTopics,
+        progress: totalTopics > 0 ? Math.round((completed / totalTopics) * 100) : 0,
+        avgQuizScore: practice ? Math.round(practice.total / practice.count) : 0,
+        quizzesTaken: practice?.count || 0,
+        codingPassed: coding?.passed || 0,
+        codingTotal: coding?.total || 0,
+      };
+    });
+
+    // Sort by progress descending
+    students.sort((a, b) => b.progress - a.progress);
+
+    const courses = (coursesRes.data || []).map(c => ({
+      _id: c.id,
+      name: c.name,
+      topicCount: (topicsByCourse[c.id] || []).length,
+    }));
+
+    res.json({ students, courses, totalTopics });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// @desc    Get detailed progress for a single student in a batch
+// @route   GET /api/batches/:id/students/:studentId/progress
+// @access  Private/Admin
+export const getStudentProgress = async (req, res) => {
+  try {
+    const { id: batchId, studentId } = req.params;
+
+    // Verify student is enrolled
+    const { data: enrollment } = await supabase
+      .from('student_batches')
+      .select('id')
+      .eq('batch_id', batchId)
+      .eq('student_id', studentId)
+      .maybeSingle();
+
+    if (!enrollment) {
+      return res.status(404).json({ message: 'Student not enrolled in this batch' });
+    }
+
+    // Get batch courses
+    const { data: batchCourses } = await supabase
+      .from('batch_courses')
+      .select('course_id')
+      .eq('batch_id', batchId);
+    const courseIds = (batchCourses || []).map(bc => bc.course_id);
+
+    // Fetch everything in parallel
+    const [studentRes, coursesRes, topicsRes, completionsRes, practiceRes, codingRes, attemptsRes] = await Promise.all([
+      supabase.from('students').select('id, name, email').eq('id', studentId).single(),
+      courseIds.length > 0
+        ? supabase.from('courses').select('id, name, icon, color').in('id', courseIds).order('sort_order')
+        : { data: [], error: null },
+      courseIds.length > 0
+        ? supabase.from('topics').select('id, course_id, name, sort_order').in('course_id', courseIds).order('sort_order')
+        : { data: [], error: null },
+      supabase.from('topic_completions').select('topic_id, item_type, completed_at').eq('student_id', studentId),
+      supabase.from('practice_scores').select('topic_id, score, total, percentage, updated_at').eq('student_id', studentId),
+      supabase.from('coding_submissions').select('topic_id, passed, language, updated_at').eq('student_id', studentId),
+      supabase.from('practice_attempts').select('topic_id, attempt_number, score, total, percentage, passed, created_at').eq('student_id', studentId).order('created_at', { ascending: false }).limit(50),
+    ]);
+
+    if (studentRes.error) throw studentRes.error;
+
+    // Build maps
+    const completionMap = {};
+    for (const c of completionsRes.data || []) {
+      if (!completionMap[c.topic_id]) completionMap[c.topic_id] = [];
+      completionMap[c.topic_id].push({ type: c.item_type, completedAt: c.completed_at });
+    }
+
+    const practiceMap = {};
+    for (const p of practiceRes.data || []) {
+      practiceMap[p.topic_id] = { score: p.score, total: p.total, percentage: parseFloat(p.percentage), updatedAt: p.updated_at };
+    }
+
+    const codingMap = {};
+    for (const c of codingRes.data || []) {
+      codingMap[c.topic_id] = { passed: c.passed, language: c.language, updatedAt: c.updated_at };
+    }
+
+    // Build course → topics with progress
+    const courses = (coursesRes.data || []).map(course => {
+      const courseTopics = (topicsRes.data || [])
+        .filter(t => t.course_id === course.id)
+        .map(topic => ({
+          _id: topic.id,
+          name: topic.name,
+          completions: completionMap[topic.id] || [],
+          practiceScore: practiceMap[topic.id] || null,
+          codingSubmission: codingMap[topic.id] || null,
+        }));
+
+      const completedTopics = courseTopics.filter(t => t.completions.length > 0).length;
+
+      return {
+        _id: course.id,
+        name: course.name,
+        icon: course.icon,
+        color: course.color,
+        topics: courseTopics,
+        completedTopics,
+        totalTopics: courseTopics.length,
+        progress: courseTopics.length > 0 ? Math.round((completedTopics / courseTopics.length) * 100) : 0,
+      };
+    });
+
+    const recentAttempts = (attemptsRes.data || []).map(a => ({
+      topicId: a.topic_id,
+      attemptNumber: a.attempt_number,
+      score: a.score,
+      total: a.total,
+      percentage: parseFloat(a.percentage),
+      passed: a.passed,
+      createdAt: a.created_at,
+    }));
+
+    res.json({
+      student: {
+        _id: studentRes.data.id,
+        name: studentRes.data.name,
+        email: studentRes.data.email,
+      },
+      courses,
+      recentAttempts,
+    });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};

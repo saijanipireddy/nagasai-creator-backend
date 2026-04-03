@@ -1,5 +1,7 @@
 import supabase from '../config/db.js';
+import logger from '../config/logger.js';
 import { handleError } from '../middleware/errorHandler.js';
+import { withExecutionLimit, getQueueStats } from '../lib/executionQueue.js';
 
 // @desc    Submit practice (MCQ) score
 // @route   POST /api/scores/practice
@@ -229,28 +231,41 @@ const executePistonDirect = async (sourceCode, language, version, stdin = '') =>
 };
 
 // Unified execute function — uses Piston if configured, otherwise JDoodle
+// Wrapped in withExecutionLimit to cap concurrent executions
 const executePiston = async (sourceCode, language, stdin = '') => {
   if (circuitBreaker.isOpen()) {
     return { success: false, output: 'Code execution service is temporarily unavailable. Please try again in a minute.' };
   }
 
-  let result;
+  // Fast-fail checks before entering the queue
   if (process.env.PISTON_API_URL) {
     const config = PISTON_LANGUAGES[language];
     if (!config) return { success: false, output: `Unsupported language: ${language}` };
-    result = await executePistonDirect(sourceCode, config.lang, config.version, stdin);
-  } else if (process.env.JDOODLE_CLIENT_ID) {
-    result = await executeJDoodle(sourceCode, language, stdin);
-  } else {
+  } else if (!process.env.JDOODLE_CLIENT_ID) {
     return { success: false, output: 'No code execution service configured. Set PISTON_API_URL or JDOODLE_CLIENT_ID.' };
   }
 
-  if (result.success) {
-    circuitBreaker.recordSuccess();
-  } else {
-    circuitBreaker.recordFailure();
+  try {
+    return await withExecutionLimit(async () => {
+      let result;
+      if (process.env.PISTON_API_URL) {
+        const config = PISTON_LANGUAGES[language];
+        result = await executePistonDirect(sourceCode, config.lang, config.version, stdin);
+      } else {
+        result = await executeJDoodle(sourceCode, language, stdin);
+      }
+
+      if (result.success) {
+        circuitBreaker.recordSuccess();
+      } else {
+        circuitBreaker.recordFailure();
+      }
+      return result;
+    });
+  } catch (err) {
+    // Queue timeout
+    return { success: false, output: err.message };
   }
-  return result;
 };
 
 // @desc    Execute code (proxy for frontend Run button)
@@ -268,25 +283,31 @@ export const runCode = async (req, res) => {
 
     // If Piston is configured (self-hosted), use it directly
     if (process.env.PISTON_API_URL) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const data = await withExecutionLimit(async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
 
-      const response = await fetch(process.env.PISTON_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language, version, files, stdin: stdin || '' }),
-        signal: controller.signal,
+        const response = await fetch(process.env.PISTON_API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ language, version, files, stdin: stdin || '' }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          const errorBody = await response.text().catch(() => '');
+          logger.error({ status: response.status, statusText: response.statusText, body: errorBody?.slice(0, 200) }, 'Piston API error');
+          const err = new Error('Code execution service unavailable');
+          err.statusCode = 502;
+          err.detail = errorBody.slice(0, 200);
+          throw err;
+        }
+
+        return response.json();
       });
 
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        console.error(`Piston API error: ${response.status} ${response.statusText}`, errorBody);
-        return res.status(502).json({ message: 'Code execution service unavailable', status: response.status, detail: errorBody.slice(0, 200) });
-      }
-
-      const data = await response.json();
       return res.json(data);
     }
 
@@ -297,32 +318,36 @@ export const runCode = async (req, res) => {
         return res.status(400).json({ message: `Unsupported language: ${language}` });
       }
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const data = await withExecutionLimit(async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
 
-      const response = await fetch('https://api.jdoodle.com/v1/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: process.env.JDOODLE_CLIENT_ID,
-          clientSecret: process.env.JDOODLE_CLIENT_SECRET,
-          script: sourceCode,
-          language: jdoodleConfig.language,
-          versionIndex: jdoodleConfig.versionIndex,
-          stdin: stdin || '',
-        }),
-        signal: controller.signal,
+        const response = await fetch('https://api.jdoodle.com/v1/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: process.env.JDOODLE_CLIENT_ID,
+            clientSecret: process.env.JDOODLE_CLIENT_SECRET,
+            script: sourceCode,
+            language: jdoodleConfig.language,
+            versionIndex: jdoodleConfig.versionIndex,
+            stdin: stdin || '',
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          const errorBody = await response.text().catch(() => '');
+          logger.error({ status: response.status, body: errorBody?.slice(0, 200) }, 'JDoodle API error');
+          const err = new Error('Code execution service unavailable');
+          err.statusCode = 502;
+          throw err;
+        }
+
+        return response.json();
       });
-
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        console.error(`JDoodle API error: ${response.status}`, errorBody);
-        return res.status(502).json({ message: 'Code execution service unavailable' });
-      }
-
-      const data = await response.json();
 
       // Convert JDoodle response to Piston-compatible format so frontend works unchanged
       return res.json({
@@ -344,7 +369,13 @@ export const runCode = async (req, res) => {
     if (err.name === 'AbortError') {
       return res.status(504).json({ message: 'Code execution timed out (15s limit)' });
     }
-    console.error('Code execution proxy error:', err.message);
+    if (err.message?.includes('queue timeout')) {
+      return res.status(503).json({ message: err.message });
+    }
+    if (err.statusCode === 502) {
+      return res.status(502).json({ message: err.message, detail: err.detail });
+    }
+    logger.error({ err }, 'Code execution proxy error');
     res.status(500).json({ message: `Execution error: ${err.message}` });
   }
 };
@@ -1197,4 +1228,11 @@ export const getLeaderboard = async (req, res) => {
   } catch (error) {
     handleError(res, error, 'scoreController');
   }
+};
+
+// @desc    Get code execution queue stats
+// @route   GET /api/scores/queue-stats
+// @access  Private/Admin (will be used by admin dashboard)
+export const getExecutionQueueStats = (req, res) => {
+  res.json(getQueueStats());
 };
