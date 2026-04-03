@@ -87,7 +87,7 @@ export const submitCodingScore = async (req, res) => {
   }
 };
 
-// Piston API language config (mirrors frontend LANGUAGE_CONFIG)
+// Language config — supports both Piston (self-hosted) and JDoodle (free API)
 const PISTON_LANGUAGES = {
   python: { lang: 'python', version: '3.10.0' },
   java: { lang: 'java', version: '15.0.2' },
@@ -102,7 +102,23 @@ const PISTON_LANGUAGES = {
   swift: { lang: 'swift', version: '5.3.3' },
 };
 
-/* -------------------- CIRCUIT BREAKER FOR PISTON -------------------- */
+// JDoodle language mapping (language name → JDoodle language + versionIndex)
+const JDOODLE_LANGUAGES = {
+  python: { language: 'python3', versionIndex: '4' },
+  java: { language: 'java', versionIndex: '4' },
+  cpp: { language: 'cpp17', versionIndex: '1' },
+  'c++': { language: 'cpp17', versionIndex: '1' },
+  c: { language: 'c', versionIndex: '5' },
+  typescript: { language: 'typescript', versionIndex: '0' },
+  php: { language: 'php', versionIndex: '4' },
+  ruby: { language: 'ruby', versionIndex: '4' },
+  go: { language: 'go', versionIndex: '4' },
+  rust: { language: 'rust', versionIndex: '4' },
+  kotlin: { language: 'kotlin', versionIndex: '4' },
+  swift: { language: 'swift', versionIndex: '4' },
+};
+
+/* -------------------- CIRCUIT BREAKER -------------------- */
 const circuitBreaker = {
   failures: 0,
   threshold: 5,
@@ -112,7 +128,6 @@ const circuitBreaker = {
   isOpen() {
     if (this.failures >= this.threshold) {
       if (Date.now() < this.openUntil) return true;
-      // Half-open: allow one attempt
       this.failures = 0;
     }
     return false;
@@ -130,25 +145,61 @@ const circuitBreaker = {
   },
 };
 
-// Execute code via Piston API with 15s timeout + circuit breaker
-const executePiston = async (sourceCode, language, stdin = '') => {
-  const config = PISTON_LANGUAGES[language];
+// Execute code via JDoodle API
+const executeJDoodle = async (sourceCode, language, stdin = '') => {
+  const config = JDOODLE_LANGUAGES[language];
   if (!config) return { success: false, output: `Unsupported language: ${language}` };
-
-  if (circuitBreaker.isOpen()) {
-    return { success: false, output: 'Code execution service is temporarily unavailable. Please try again in a minute.' };
-  }
 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
 
-    const response = await fetch(process.env.PISTON_API_URL || 'https://emkc.org/api/v2/piston/execute', {
+    const response = await fetch('https://api.jdoodle.com/v1/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        language: config.lang,
-        version: config.version,
+        clientId: process.env.JDOODLE_CLIENT_ID,
+        clientSecret: process.env.JDOODLE_CLIENT_SECRET,
+        script: sourceCode,
+        language: config.language,
+        versionIndex: config.versionIndex,
+        stdin: stdin || '',
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      return { success: false, output: 'Code execution service unavailable' };
+    }
+
+    const data = await response.json();
+    const output = data.output || '';
+    if (data.statusCode === 200 || data.statusCode == null) {
+      return { success: true, output };
+    }
+    return { success: false, output: output || 'Execution failed' };
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return { success: false, output: 'Code execution timed out (15s limit)' };
+    }
+    return { success: false, output: `Execution error: ${err.message}` };
+  }
+};
+
+// Execute code via Piston API (used when PISTON_API_URL is configured)
+const executePistonDirect = async (sourceCode, language, version, stdin = '') => {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    const response = await fetch(process.env.PISTON_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        language,
+        version,
         files: [{ content: sourceCode }],
         stdin: stdin || '',
       }),
@@ -158,13 +209,10 @@ const executePiston = async (sourceCode, language, stdin = '') => {
     clearTimeout(timeout);
 
     if (!response.ok) {
-      circuitBreaker.recordFailure();
       return { success: false, output: 'Execution service unavailable' };
     }
 
     const data = await response.json();
-    circuitBreaker.recordSuccess();
-
     if (data.run) {
       const output = data.run.output || data.run.stdout || '';
       const error = data.run.stderr || '';
@@ -173,7 +221,6 @@ const executePiston = async (sourceCode, language, stdin = '') => {
     }
     return { success: false, output: 'No output received' };
   } catch (err) {
-    circuitBreaker.recordFailure();
     if (err.name === 'AbortError') {
       return { success: false, output: 'Code execution timed out (15s limit)' };
     }
@@ -181,7 +228,32 @@ const executePiston = async (sourceCode, language, stdin = '') => {
   }
 };
 
-// @desc    Execute code via Piston (proxy for frontend Run button)
+// Unified execute function — uses Piston if configured, otherwise JDoodle
+const executePiston = async (sourceCode, language, stdin = '') => {
+  if (circuitBreaker.isOpen()) {
+    return { success: false, output: 'Code execution service is temporarily unavailable. Please try again in a minute.' };
+  }
+
+  let result;
+  if (process.env.PISTON_API_URL) {
+    const config = PISTON_LANGUAGES[language];
+    if (!config) return { success: false, output: `Unsupported language: ${language}` };
+    result = await executePistonDirect(sourceCode, config.lang, config.version, stdin);
+  } else if (process.env.JDOODLE_CLIENT_ID) {
+    result = await executeJDoodle(sourceCode, language, stdin);
+  } else {
+    return { success: false, output: 'No code execution service configured. Set PISTON_API_URL or JDOODLE_CLIENT_ID.' };
+  }
+
+  if (result.success) {
+    circuitBreaker.recordSuccess();
+  } else {
+    circuitBreaker.recordFailure();
+  }
+  return result;
+};
+
+// @desc    Execute code (proxy for frontend Run button)
 // @route   POST /api/scores/run-code
 // @access  Private/Student
 export const runCode = async (req, res) => {
@@ -192,31 +264,87 @@ export const runCode = async (req, res) => {
       return res.status(400).json({ message: 'language and files are required' });
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const sourceCode = files[0]?.content || '';
 
-    const response = await fetch(process.env.PISTON_API_URL || 'https://emkc.org/api/v2/piston/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ language, version, files, stdin: stdin || '' }),
-      signal: controller.signal,
-    });
+    // If Piston is configured (self-hosted), use it directly
+    if (process.env.PISTON_API_URL) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
 
-    clearTimeout(timeout);
+      const response = await fetch(process.env.PISTON_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language, version, files, stdin: stdin || '' }),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      console.error(`Piston API error: ${response.status} ${response.statusText}`, errorBody);
-      return res.status(502).json({ message: 'Code execution service unavailable', status: response.status, detail: errorBody.slice(0, 200) });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        console.error(`Piston API error: ${response.status} ${response.statusText}`, errorBody);
+        return res.status(502).json({ message: 'Code execution service unavailable', status: response.status, detail: errorBody.slice(0, 200) });
+      }
+
+      const data = await response.json();
+      return res.json(data);
     }
 
-    const data = await response.json();
-    res.json(data);
+    // Otherwise use JDoodle and return Piston-compatible response format
+    if (process.env.JDOODLE_CLIENT_ID) {
+      const jdoodleConfig = JDOODLE_LANGUAGES[language];
+      if (!jdoodleConfig) {
+        return res.status(400).json({ message: `Unsupported language: ${language}` });
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+
+      const response = await fetch('https://api.jdoodle.com/v1/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: process.env.JDOODLE_CLIENT_ID,
+          clientSecret: process.env.JDOODLE_CLIENT_SECRET,
+          script: sourceCode,
+          language: jdoodleConfig.language,
+          versionIndex: jdoodleConfig.versionIndex,
+          stdin: stdin || '',
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        console.error(`JDoodle API error: ${response.status}`, errorBody);
+        return res.status(502).json({ message: 'Code execution service unavailable' });
+      }
+
+      const data = await response.json();
+
+      // Convert JDoodle response to Piston-compatible format so frontend works unchanged
+      return res.json({
+        run: {
+          stdout: data.output || '',
+          stderr: '',
+          output: data.output || '',
+          code: data.statusCode === 200 || data.statusCode == null ? 0 : 1,
+          signal: null,
+        },
+        language: language,
+        version: version,
+      });
+    }
+
+    // No execution service configured
+    return res.status(503).json({ message: 'No code execution service configured. Contact administrator.' });
   } catch (err) {
     if (err.name === 'AbortError') {
       return res.status(504).json({ message: 'Code execution timed out (15s limit)' });
     }
-    console.error('Piston proxy error:', err.message);
+    console.error('Code execution proxy error:', err.message);
     res.status(500).json({ message: `Execution error: ${err.message}` });
   }
 };
