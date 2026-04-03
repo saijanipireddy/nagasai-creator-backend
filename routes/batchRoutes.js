@@ -8,6 +8,9 @@ import {
   enrollStudentsSchema,
   updateEnrollmentSchema,
   onboardStudentSchema,
+  autoScheduleSchema,
+  manualUnlockSchema,
+  bulkScheduleSchema,
 } from '../schemas/batch.js';
 import {
   getBatches,
@@ -26,6 +29,12 @@ import {
   checkCourseAccess,
   getBatchProgress,
   getStudentProgress,
+  getSchedule,
+  autoSchedule,
+  bulkSchedule,
+  toggleTopicUnlock,
+  clearSchedule,
+  getStudentSchedule,
 } from '../controllers/batchController.js';
 
 const router = express.Router();
@@ -33,6 +42,7 @@ const router = express.Router();
 // ---- Student-facing (MUST be before /:id to avoid matching "student" as id) ----
 router.get('/student/my-courses', studentProtect, getMyEnrolledCourses);
 router.get('/student/check-access/:courseId', studentProtect, checkCourseAccess);
+router.get('/student/schedule/:courseId', studentProtect, getStudentSchedule);
 
 // ---- Admin: specific paths before /:id ----
 router.get('/', protect, getBatches);
@@ -46,6 +56,13 @@ router.get('/:id/progress', protect, getBatchProgress);
 router.get('/:id/students/:studentId/progress', protect, getStudentProgress);
 router.put('/:id', protect, validate(updateBatchSchema), updateBatch);
 router.delete('/:id', protect, deleteBatch);
+
+// ---- Batch ↔ Topic Schedule ----
+router.get('/:id/schedule/:courseId', protect, getSchedule);
+router.post('/:id/schedule/auto', protect, validate(autoScheduleSchema), autoSchedule);
+router.post('/:id/schedule/bulk', protect, validate(bulkScheduleSchema), bulkSchedule);
+router.put('/:id/schedule/toggle', protect, validate(manualUnlockSchema), toggleTopicUnlock);
+router.delete('/:id/schedule/:courseId', protect, clearSchedule);
 
 // ---- Batch ↔ Course ----
 router.post('/:id/courses', protect, validate(assignCoursesSchema), assignCourses);

@@ -244,6 +244,31 @@ export const requireTopicAccess = async (req, res, next) => {
         return res.status(403).json({ message: 'Access denied, not enrolled in this course' });
       }
 
+      // Check topic schedule: is this topic unlocked for the student's batch?
+      const { data: schedules } = await supabase
+        .from('batch_topic_schedule')
+        .select('unlock_date, is_unlocked')
+        .in('batch_id', batchIds)
+        .eq('topic_id', topicId);
+
+      // If no schedule entries exist, topic is unrestricted (accessible)
+      if (schedules && schedules.length > 0) {
+        const today = new Date().toISOString().split('T')[0];
+        // Topic is accessible if ANY batch has it unlocked
+        const accessible = schedules.some((s) => s.is_unlocked || s.unlock_date <= today);
+        if (!accessible) {
+          // Find the earliest unlock date to show in the error message
+          const earliest = schedules
+            .map((s) => s.unlock_date)
+            .sort()[0];
+          return res.status(403).json({
+            message: `This topic is not yet available. It unlocks on ${earliest}`,
+            unlockDate: earliest,
+            locked: true,
+          });
+        }
+      }
+
       return next();
     }
 

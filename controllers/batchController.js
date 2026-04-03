@@ -2,6 +2,10 @@ import bcrypt from 'bcryptjs';
 import supabase from '../config/db.js';
 import { handleError } from '../middleware/errorHandler.js';
 
+// Sentinel date used when admin manually locks a topic via toggle.
+// Must match the value checked in admin + student frontends.
+export const MANUAL_LOCK_DATE = '2099-12-31';
+
 // ---------- helpers ----------
 const mapBatch = (b) => ({
   _id: b.id,
@@ -575,6 +579,328 @@ export const checkCourseAccess = async (req, res) => {
       .limit(1);
 
     res.json({ hasAccess: (match && match.length > 0) });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// ============================================
+// Batch ↔ Topic Schedule (per-batch topic unlock)
+// ============================================
+
+// @desc    Get topic schedule for a batch + course
+// @route   GET /api/batches/:id/schedule/:courseId
+// @access  Private/Admin
+export const getSchedule = async (req, res) => {
+  try {
+    const batchId = req.params.id;
+    const courseId = req.params.courseId;
+
+    // Get topics for this course (ordered)
+    const { data: topics, error: tErr } = await supabase
+      .from('topics')
+      .select('id, title, sort_order')
+      .eq('course_id', courseId)
+      .order('sort_order');
+
+    if (tErr) throw tErr;
+
+    // Get existing schedule entries for this batch + these topics
+    const topicIds = (topics || []).map((t) => t.id);
+    let scheduleMap = {};
+
+    if (topicIds.length > 0) {
+      const { data: schedules, error: sErr } = await supabase
+        .from('batch_topic_schedule')
+        .select('*')
+        .eq('batch_id', batchId)
+        .in('topic_id', topicIds);
+
+      if (sErr) throw sErr;
+
+      for (const s of schedules || []) {
+        scheduleMap[s.topic_id] = {
+          _id: s.id,
+          unlockDate: s.unlock_date,
+          isUnlocked: s.is_unlocked,
+        };
+      }
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+
+    const result = (topics || []).map((t) => {
+      const sched = scheduleMap[t.id] || null;
+      // A topic is accessible if: no schedule exists (unrestricted) OR
+      // manually unlocked OR unlock_date <= today
+      const isAccessible = !sched || sched.isUnlocked || sched.unlockDate <= today;
+
+      return {
+        _id: t.id,
+        title: t.title,
+        sortOrder: t.sort_order,
+        schedule: sched,
+        isAccessible,
+      };
+    });
+
+    res.json({ topics: result });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// @desc    Auto-schedule topics for a batch + course (1 topic/day starting from startDate)
+// @route   POST /api/batches/:id/schedule/auto
+// @access  Private/Admin
+export const autoSchedule = async (req, res) => {
+  try {
+    const batchId = req.params.id;
+    const { courseId, startDate, topicsPerDay = 1 } = req.body;
+
+    // Get topics for this course (ordered)
+    const { data: topics, error: tErr } = await supabase
+      .from('topics')
+      .select('id, sort_order')
+      .eq('course_id', courseId)
+      .order('sort_order');
+
+    if (tErr) throw tErr;
+    if (!topics || topics.length === 0) {
+      return res.status(404).json({ message: 'No topics found for this course' });
+    }
+
+    // Verify this course is assigned to the batch
+    const { data: bcCheck } = await supabase
+      .from('batch_courses')
+      .select('id')
+      .eq('batch_id', batchId)
+      .eq('course_id', courseId)
+      .limit(1);
+
+    if (!bcCheck || bcCheck.length === 0) {
+      return res.status(400).json({ message: 'This course is not assigned to this batch' });
+    }
+
+    // Build schedule rows: topicsPerDay topics share the same date
+    const rows = [];
+    const start = new Date(startDate + 'T00:00:00');
+
+    topics.forEach((topic, index) => {
+      const dayOffset = Math.floor(index / topicsPerDay);
+      const date = new Date(start);
+      date.setDate(date.getDate() + dayOffset);
+
+      rows.push({
+        batch_id: batchId,
+        topic_id: topic.id,
+        unlock_date: date.toISOString().split('T')[0],
+        is_unlocked: false,
+      });
+    });
+
+    // Upsert: if schedule already exists for batch+topic, update it
+    const { error: uErr } = await supabase
+      .from('batch_topic_schedule')
+      .upsert(rows, { onConflict: 'batch_id,topic_id' });
+
+    if (uErr) throw uErr;
+
+    res.json({
+      message: `Scheduled ${topics.length} topics starting ${startDate}`,
+      count: topics.length,
+    });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// @desc    Bulk set schedule (admin picks individual dates per topic)
+// @route   POST /api/batches/:id/schedule/bulk
+// @access  Private/Admin
+export const bulkSchedule = async (req, res) => {
+  try {
+    const batchId = req.params.id;
+    const { courseId, schedule } = req.body;
+
+    // Verify course is assigned to batch
+    const { data: bcCheck } = await supabase
+      .from('batch_courses')
+      .select('id')
+      .eq('batch_id', batchId)
+      .eq('course_id', courseId)
+      .limit(1);
+
+    if (!bcCheck || bcCheck.length === 0) {
+      return res.status(400).json({ message: 'This course is not assigned to this batch' });
+    }
+
+    const rows = schedule.map((s) => ({
+      batch_id: batchId,
+      topic_id: s.topicId,
+      unlock_date: s.unlockDate,
+      is_unlocked: false,
+    }));
+
+    const { error } = await supabase
+      .from('batch_topic_schedule')
+      .upsert(rows, { onConflict: 'batch_id,topic_id' });
+
+    if (error) throw error;
+
+    res.json({ message: `Scheduled ${schedule.length} topics`, count: schedule.length });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// @desc    Manually toggle unlock for a single topic in a batch
+// @route   PUT /api/batches/:id/schedule/toggle
+// @access  Private/Admin
+export const toggleTopicUnlock = async (req, res) => {
+  try {
+    const batchId = req.params.id;
+    const { topicId, unlock } = req.body;
+
+    // Check if schedule entry exists
+    const { data: existing } = await supabase
+      .from('batch_topic_schedule')
+      .select('id, unlock_date')
+      .eq('batch_id', batchId)
+      .eq('topic_id', topicId)
+      .maybeSingle();
+
+    if (existing) {
+      const updates = { is_unlocked: unlock };
+      // When LOCKING: set unlock_date to far future so the date check doesn't bypass the lock
+      // When UNLOCKING: keep the existing date (is_unlocked=true overrides date anyway)
+      if (!unlock) {
+        updates.unlock_date = MANUAL_LOCK_DATE;
+      }
+      const { error } = await supabase
+        .from('batch_topic_schedule')
+        .update(updates)
+        .eq('id', existing.id);
+      if (error) throw error;
+    } else {
+      // No schedule entry exists — create one
+      const { error } = await supabase
+        .from('batch_topic_schedule')
+        .insert({
+          batch_id: batchId,
+          topic_id: topicId,
+          // Lock: far future date so it's actually locked
+          // Unlock: today's date + is_unlocked=true
+          unlock_date: unlock ? new Date().toISOString().split('T')[0] : MANUAL_LOCK_DATE,
+          is_unlocked: unlock,
+        });
+      if (error) throw error;
+    }
+
+    res.json({ message: unlock ? 'Topic unlocked' : 'Topic locked', topicId, unlock });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// @desc    Remove all schedule entries for a batch + course (makes all topics unrestricted)
+// @route   DELETE /api/batches/:id/schedule/:courseId
+// @access  Private/Admin
+export const clearSchedule = async (req, res) => {
+  try {
+    const batchId = req.params.id;
+    const courseId = req.params.courseId;
+
+    // Get topic IDs for this course
+    const { data: topics } = await supabase
+      .from('topics')
+      .select('id')
+      .eq('course_id', courseId);
+
+    const topicIds = (topics || []).map((t) => t.id);
+
+    if (topicIds.length > 0) {
+      const { error } = await supabase
+        .from('batch_topic_schedule')
+        .delete()
+        .eq('batch_id', batchId)
+        .in('topic_id', topicIds);
+
+      if (error) throw error;
+    }
+
+    res.json({ message: 'Schedule cleared, all topics are now unrestricted' });
+  } catch (error) {
+    handleError(res, error, 'batchController');
+  }
+};
+
+// @desc    Get topic schedule for student (which topics are unlocked for them)
+// @route   GET /api/batches/student/schedule/:courseId
+// @access  Private/Student
+export const getStudentSchedule = async (req, res) => {
+  try {
+    const studentId = req.student.id;
+    const courseId = req.params.courseId;
+
+    // Get student's active batch enrollments
+    const { data: enrollments } = await supabase
+      .from('student_batches')
+      .select('batch_id')
+      .eq('student_id', studentId)
+      .eq('is_active', true)
+      .in('payment_status', ['paid', 'free']);
+
+    if (!enrollments || enrollments.length === 0) {
+      return res.json({ schedule: {} });
+    }
+
+    const batchIds = enrollments.map((e) => e.batch_id);
+
+    // Get topics for this course
+    const { data: topics } = await supabase
+      .from('topics')
+      .select('id')
+      .eq('course_id', courseId);
+
+    const topicIds = (topics || []).map((t) => t.id);
+
+    if (topicIds.length === 0) {
+      return res.json({ schedule: {} });
+    }
+
+    // Get schedule entries for student's batches + these topics
+    const { data: schedules, error: sErr } = await supabase
+      .from('batch_topic_schedule')
+      .select('topic_id, unlock_date, is_unlocked')
+      .in('batch_id', batchIds)
+      .in('topic_id', topicIds);
+
+    if (sErr) throw sErr;
+
+    const today = new Date().toISOString().split('T')[0];
+
+    // Build per-topic result: topic is accessible if ANY of student's batches has it unlocked
+    // If no schedule entry exists for a topic, it's unrestricted (accessible)
+    const scheduledTopics = new Set();
+    const topicStatus = {};
+
+    for (const s of schedules || []) {
+      scheduledTopics.add(s.topic_id);
+      const accessible = s.is_unlocked || s.unlock_date <= today;
+
+      // If already accessible from another batch, keep it accessible
+      if (!topicStatus[s.topic_id] || accessible) {
+        topicStatus[s.topic_id] = {
+          unlockDate: s.unlock_date,
+          isUnlocked: s.is_unlocked,
+          isAccessible: accessible,
+        };
+      }
+    }
+
+    // Build final schedule map: unscheduled topics are not included (frontend treats missing = accessible)
+    res.json({ schedule: topicStatus });
   } catch (error) {
     handleError(res, error, 'batchController');
   }
