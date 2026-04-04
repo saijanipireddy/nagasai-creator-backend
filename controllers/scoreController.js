@@ -1136,6 +1136,91 @@ export const getDashboardWidget = async (req, res) => {
 let leaderboardCache = { data: null, ts: 0 };
 const LEADERBOARD_TTL = 60_000;
 
+// Helper: compute streak & consistency for a list of student IDs
+const computeStreakForStudents = async (studentIds) => {
+  if (!studentIds.length) return {};
+
+  // Fetch all completions for these students
+  const { data: completions, error: compErr } = await supabase
+    .from('topic_completions')
+    .select('student_id, completed_at')
+    .in('student_id', studentIds);
+
+  if (compErr) throw compErr;
+
+  // Fetch enrollment dates
+  const { data: enrollments, error: enrErr } = await supabase
+    .from('student_batches')
+    .select('student_id, enrolled_at')
+    .in('student_id', studentIds)
+    .eq('is_active', true)
+    .order('enrolled_at', { ascending: true });
+
+  if (enrErr) throw enrErr;
+
+  // Build per-student active days and enrollment date
+  const studentActiveDays = {};
+  const studentEnrollment = {};
+
+  for (const e of (enrollments || [])) {
+    if (!studentEnrollment[e.student_id]) {
+      const d = new Date(e.enrolled_at);
+      d.setHours(0, 0, 0, 0);
+      studentEnrollment[e.student_id] = d;
+    }
+  }
+
+  for (const c of (completions || [])) {
+    if (!c.completed_at) continue;
+    if (!studentActiveDays[c.student_id]) studentActiveDays[c.student_id] = new Set();
+    studentActiveDays[c.student_id].add(toDateStr(new Date(c.completed_at)));
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const results = {};
+  for (const sid of studentIds) {
+    const activeDays = studentActiveDays[sid] || new Set();
+    const enrollmentDate = studentEnrollment[sid] || null;
+
+    // Current Streak
+    let currentStreak = 0;
+    let checkDate = new Date(today);
+    if (isSunday(checkDate)) checkDate = prevDay(checkDate);
+    if (!activeDays.has(toDateStr(checkDate))) {
+      checkDate = prevDay(checkDate);
+      while (isSunday(checkDate)) checkDate = prevDay(checkDate);
+    }
+    while (activeDays.has(toDateStr(checkDate))) {
+      currentStreak++;
+      checkDate = prevDay(checkDate);
+      while (isSunday(checkDate)) checkDate = prevDay(checkDate);
+      if (enrollmentDate && checkDate < enrollmentDate) break;
+    }
+
+    // Consistency Score
+    let consistencyScore = 0;
+    if (enrollmentDate) {
+      let d = new Date(enrollmentDate);
+      while (d <= today) {
+        if (!isSunday(d)) {
+          if (activeDays.has(toDateStr(d))) {
+            consistencyScore++;
+          } else {
+            consistencyScore = Math.max(0, consistencyScore - 1);
+          }
+        }
+        d = nextDay(d);
+      }
+    }
+
+    results[sid] = { currentStreak, consistencyScore };
+  }
+
+  return results;
+};
+
 // @desc    Get leaderboard (top 50 + current student rank). Supports ?batchId= for batch-scoped leaderboard.
 // @route   GET /api/scores/leaderboard
 // @access  Private/Student
@@ -1188,6 +1273,10 @@ export const getLeaderboard = async (req, res) => {
       }
     }
 
+    // Compute streak & consistency for all leaderboard students
+    const studentIds = topScorers.map((row) => row.student_id);
+    const streakData = await computeStreakForStudents(studentIds);
+
     const leaderboard = topScorers.map((row, index) => ({
       rank: index + 1,
       _id: row.student_id,
@@ -1195,6 +1284,8 @@ export const getLeaderboard = async (req, res) => {
       practicePoints: row.practice_points,
       codingPoints: row.coding_points,
       totalPoints: row.total_points,
+      currentStreak: streakData[row.student_id]?.currentStreak || 0,
+      consistencyScore: streakData[row.student_id]?.consistencyScore || 0,
       isCurrentUser: row.student_id === studentId,
     }));
 
