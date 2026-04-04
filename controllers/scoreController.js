@@ -102,6 +102,7 @@ const PISTON_LANGUAGES = {
   rust: { lang: 'rust', version: '1.68.2' },
   kotlin: { lang: 'kotlin', version: '1.8.20' },
   swift: { lang: 'swift', version: '5.3.3' },
+  javascript: { lang: 'javascript', version: '18.15.0' },
 };
 
 // JDoodle language mapping (language name → JDoodle language + versionIndex)
@@ -118,6 +119,7 @@ const JDOODLE_LANGUAGES = {
   rust: { language: 'rust', versionIndex: '4' },
   kotlin: { language: 'kotlin', versionIndex: '4' },
   swift: { language: 'swift', versionIndex: '4' },
+  javascript: { language: 'nodejs', versionIndex: '4' },
 };
 
 /* -------------------- CIRCUIT BREAKER -------------------- */
@@ -401,6 +403,13 @@ export const getCodingSubmission = async (req, res) => {
       return res.json({ submission: null });
     }
 
+    // Parse summary from output if available
+    let summary = null;
+    try {
+      const parsed = JSON.parse(data.output);
+      if (parsed?.summary) summary = parsed.summary;
+    } catch (e) { /* old format - no summary */ }
+
     res.json({
       submission: {
         id: data.id,
@@ -410,6 +419,7 @@ export const getCodingSubmission = async (req, res) => {
         output: data.output,
         language: data.language,
         updatedAt: data.updated_at,
+        summary,
       },
     });
   } catch (error) {
@@ -441,7 +451,7 @@ export const submitCodingChallenge = async (req, res) => {
       return res.status(404).json({ message: 'No coding practice found for this topic' });
     }
 
-    const isWeb = ['html', 'css', 'javascript'].includes(cp.language);
+    const isWeb = ['html', 'css', 'web'].includes(cp.language);
     const isClientExecuted = isWeb || cp.language === 'python' || cp.language === 'sql';
     let passed = false;
     let actualOutput = '';
@@ -529,6 +539,24 @@ export const submitCodingChallenge = async (req, res) => {
       }
     }
 
+    // Calculate test summary for storage
+    let totalTestCount = 0;
+    let passedTestCount = 0;
+    if (isWeb && results[0]?.verification === 'client') {
+      totalTestCount = results[0].total || 0;
+      passedTestCount = results[0].passed || 0;
+    } else if (!isWeb && results.length > 0 && results[0]?.expected !== undefined) {
+      totalTestCount = results.length;
+      passedTestCount = results.filter(r => r.passed).length;
+    }
+    const scorePercent = totalTestCount > 0 ? Math.round((passedTestCount / totalTestCount) * 100) : (passed ? 100 : 0);
+
+    // Build output with embedded summary for the landing page
+    const outputWithSummary = JSON.stringify({
+      summary: { totalTests: totalTestCount, passedTests: passedTestCount, scorePercent },
+      output: actualOutput,
+    });
+
     // Save submission
     const { data, error } = await supabase
       .from('coding_submissions')
@@ -538,7 +566,7 @@ export const submitCodingChallenge = async (req, res) => {
           topic_id: topicId,
           passed,
           code,
-          output: actualOutput,
+          output: outputWithSummary,
           language: language || cp.language,
         },
         { onConflict: 'student_id,topic_id' }
@@ -882,8 +910,13 @@ export const getCompletions = async (req, res) => {
 // Helper: check if a date is Sunday
 const isSunday = (date) => date.getDay() === 0;
 
-// Helper: get YYYY-MM-DD string from a Date
-const toDateStr = (date) => date.toISOString().split('T')[0];
+// Helper: get YYYY-MM-DD string from a Date (using local timezone, not UTC)
+const toDateStr = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
 
 // Helper: advance date by 1 day (returns new Date)
 const nextDay = (date) => {

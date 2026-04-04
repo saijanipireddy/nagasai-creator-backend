@@ -11,7 +11,7 @@ const codingPracticeSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   description: z.string().max(5000).optional().default(''),
   referenceImage: z.string().max(2000).optional().default(''),
-  imageLinks: z.array(z.string().max(2000)).max(20).optional().default([]),
+  imageLinks: z.array(z.union([z.string().max(2000), z.object({ label: z.string().max(200).optional().default(''), url: z.string().max(2000).optional().default('') })])).max(20).optional().default([]),
   starterCode: z.string().max(50000).optional().default(''),
   expectedOutput: z.string().max(50000).optional().default(''),
   hints: z.array(z.string().max(1000)).max(20).optional().default([]),
