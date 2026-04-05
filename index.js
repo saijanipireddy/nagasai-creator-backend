@@ -22,6 +22,7 @@ import jobRoutes from './routes/jobRoutes.js';
 import batchRoutes from './routes/batchRoutes.js';
 import resumeRoutes from './routes/resumeRoutes.js';
 import announcementRoutes from './routes/announcementRoutes.js';
+import interviewRoutes from './routes/interviewRoutes.js';
 
 /* -------------------- ENV VALIDATION -------------------- */
 const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
@@ -249,6 +250,7 @@ function startServer() {
   app.use('/api/batches', batchRoutes);
   app.use('/api/resume', resumeRoutes);
   app.use('/api/announcements', announcementRoutes);
+  app.use('/api/interviews', interviewRoutes);
 
   /* -------------------- 404 -------------------- */
   app.use((req, res) => {
